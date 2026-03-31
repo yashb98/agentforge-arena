@@ -1,0 +1,93 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)",
+      "Bash(pytest *)",
+      "Bash(docker sandbox *)",
+      "Bash(make *)",
+      "Bash(pip install *)",
+      "Bash(npm install *)",
+      "Bash(npx *)",
+      "Bash(curl https://api.github.com/*)",
+      "Bash(curl https://arxiv.org/*)",
+      "Bash(redis-cli *)",
+      "Bash(psql *)",
+      "Read",
+      "Write(packages/**)",
+      "Write(scripts/**)",
+      "Write(docs/**)",
+      "Write(challenges/**)",
+      "Write(infra/**)",
+      "Write(.claude/**)",
+      "Edit(packages/**)",
+      "Edit(scripts/**)",
+      "Edit(docs/**)",
+      "Edit(challenges/**)",
+      "Edit(infra/**)",
+      "Edit(.claude/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(chmod 777 *)",
+      "Write(.env)",
+      "Write(*.pem)",
+      "Write(*.key)",
+      "Edit(.env)",
+      "Edit(*.pem)",
+      "Edit(*.key)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-use/security-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Running security gate"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-use/injection-scanner.sh",
+            "timeout": 10,
+            "statusMessage": "Scanning for injection"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-tool-use/auto-format.sh",
+            "timeout": 30,
+            "statusMessage": "Auto-formatting"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-tool-use/trace-logger.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-tool-use/cost-tracker.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

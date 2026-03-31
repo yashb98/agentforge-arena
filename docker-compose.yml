@@ -1,0 +1,119 @@
+version: "3.9"
+
+# AgentForge Arena — Development Services
+# Start with: docker compose up -d
+
+services:
+  # ============================================================
+  # PostgreSQL — Primary Database
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: arena-postgres
+    environment:
+      POSTGRES_DB: agentforge
+      POSTGRES_USER: agentforge
+      POSTGRES_PASSWORD: agentforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # Redis — Cache, Event Bus, Pub/Sub
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: arena-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ============================================================
+  # MinIO — Object Storage (S3-compatible)
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: arena-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # Langfuse — LLM Observability & Tracing
+  # ============================================================
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: arena-langfuse
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://agentforge:agentforge@postgres:5432/agentforge
+      NEXTAUTH_SECRET: arena-langfuse-secret
+      NEXTAUTH_URL: http://localhost:3001
+      SALT: arena-langfuse-salt
+    ports:
+      - "3001:3000"
+
+  # ============================================================
+  # LiteLLM Proxy — Model-Agnostic LLM Routing
+  # ============================================================
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: arena-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./infra/docker/services/litellm-config.yaml:/app/config.yaml
+    command: --config /app/config.yaml --port 4000
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+  # ============================================================
+  # Qdrant — Vector Search (for Research Engine)
+  # ============================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: arena-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:
