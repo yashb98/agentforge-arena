@@ -489,6 +489,62 @@ class TournamentOrchestrator:
             )
 
     # ========================================================
+    # Cancellation
+    # ========================================================
+
+    async def cancel_tournament(self, tournament_id: UUID) -> Tournament:
+        """Cancel an active tournament, releasing all resources."""
+        tournament = self._active_tournaments.get(tournament_id)
+        if not tournament:
+            msg = f"Tournament {tournament_id} not found"
+            raise ValueError(msg)
+
+        # Cancel phase timer
+        if tournament_id in self._phase_timers:
+            self._phase_timers[tournament_id].cancel()
+            del self._phase_timers[tournament_id]
+
+        # Cancel health monitor
+        if tournament_id in self._health_tasks:
+            self._health_tasks[tournament_id].cancel()
+            del self._health_tasks[tournament_id]
+
+        # Teardown sandboxes
+        for team_id in tournament.team_ids:
+            try:
+                await self._sandbox.destroy_sandbox(str(team_id))  # type: ignore[attr-defined]
+            except Exception:
+                logger.warning("Failed to destroy sandbox for team %s", team_id)
+
+        tournament.current_phase = TournamentPhase.CANCELLED
+        tournament.completed_at = datetime.utcnow()
+
+        # Persist
+        async with get_session() as session:
+            await session.execute(
+                TournamentDB.__table__.update()  # type: ignore[union-attr]
+                .where(TournamentDB.id == tournament_id)
+                .values(
+                    current_phase=TournamentPhase.CANCELLED.value,
+                    completed_at=tournament.completed_at,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+
+        await self._events.publish(
+            "tournament.cancelled",
+            source="core.orchestrator",
+            tournament_id=tournament_id,
+            payload={
+                "previous_phase": tournament.current_phase.value,
+                "team_count": len(tournament.team_ids),
+            },
+        )
+
+        logger.info("Tournament %s cancelled", tournament_id)
+        return tournament
+
+    # ========================================================
     # Helpers
     # ========================================================
 

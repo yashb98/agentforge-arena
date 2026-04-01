@@ -153,6 +153,6 @@ class EloRatingDB(Base):
     losses: Mapped[int] = mapped_column(Integer, default=0)
     draws: Mapped[int] = mapped_column(Integer, default=0)
     category: Mapped[str] = mapped_column(
-        String(50), default="overall", description="Rating category: overall, per_role, per_model"
-    )
+        String(50), default="overall",
+    )  # Rating category: overall, per_role, per_model
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
