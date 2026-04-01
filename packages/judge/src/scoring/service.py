@@ -352,7 +352,27 @@ class JudgeService:
 
         workspace_a = f"{settings.sandbox.workspace_base}/team-{team_a_id}/project"
         workspace_b = f"{settings.sandbox.workspace_base}/team-{team_b_id}/project"
-        hidden_tests = f"challenges/library/{challenge_id}/hidden_tests"
+
+        # Resolve hidden tests path from challenge library
+        repo_root = Path(__file__).resolve().parents[4]
+        hidden_tests_dir = repo_root / "challenges" / "library" / challenge_id / "hidden_tests"
+
+        if hidden_tests_dir.is_dir():
+            hidden_tests = str(hidden_tests_dir)
+        else:
+            logger.warning("Hidden tests not found for challenge %s, using team tests", challenge_id)
+            hidden_tests = f"{workspace_a}/tests"
+
+        # Load scoring config overrides if available
+        scoring_config_file = repo_root / "challenges" / "library" / challenge_id / "scoring_config.json"
+        if scoring_config_file.is_file():
+            try:
+                config_data = json.loads(scoring_config_file.read_text())
+                weight_overrides = config_data.get("scoring_weights", {})
+                if weight_overrides:
+                    self._apply_scoring_overrides(weight_overrides)
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Failed to load scoring config for %s", challenge_id)
 
         # Run all judges in parallel for both teams
         team_a_scores, team_b_scores = await asyncio.gather(
@@ -402,6 +422,13 @@ class JudgeService:
         )
 
         return list(automated_scores) + list(llm_scores)
+
+    def _apply_scoring_overrides(self, overrides: dict[str, float]) -> None:
+        """Temporarily apply per-challenge scoring weight overrides."""
+        for dim, weight in overrides.items():
+            if dim in SCORING_WEIGHTS:
+                SCORING_WEIGHTS[dim] = weight
+                logger.debug("Scoring override: %s = %.2f", dim, weight)
 
     def _generate_matchups(self, team_ids: list[UUID]) -> list[tuple[UUID, UUID]]:
         """Generate match pairings from team list."""

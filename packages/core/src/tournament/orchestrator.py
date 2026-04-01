@@ -562,13 +562,40 @@ class TournamentOrchestrator:
 
     async def _select_random_challenge(self) -> str:
         """Select a random challenge from the library."""
-        # TODO: Implement challenge library query
-        return "url-shortener-saas"
+        import random
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[4]
+        library_dir = repo_root / "challenges" / "library"
+
+        if not library_dir.is_dir():
+            logger.warning("Challenge library not found at %s", library_dir)
+            return "url-shortener-saas"
+
+        challenges = [
+            d.name for d in library_dir.iterdir()
+            if d.is_dir() and (d / "CHALLENGE.md").is_file()
+        ]
+
+        if not challenges:
+            return "url-shortener-saas"
+
+        selected = random.choice(challenges)
+        logger.info("Selected random challenge: %s", selected)
+        return selected
 
     async def _load_challenge(self, challenge_id: str) -> str:
-        """Load challenge brief markdown."""
-        # TODO: Load from DB/filesystem
-        return f"# Challenge: {challenge_id}\n\nBuild a production-ready application."
+        """Load challenge brief markdown from the library."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[4]
+        challenge_file = repo_root / "challenges" / "library" / challenge_id / "CHALLENGE.md"
+
+        if not challenge_file.is_file():
+            logger.error("Challenge file not found: %s", challenge_file)
+            return f"# Challenge: {challenge_id}\n\nChallenge brief not found."
+
+        return challenge_file.read_text(encoding="utf-8")
 
     def _calculate_rounds(self, format: TournamentFormat, team_count: int) -> int:
         """Calculate total rounds for a tournament format."""
