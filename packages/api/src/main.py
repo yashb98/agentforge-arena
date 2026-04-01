@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from packages.agents.src.teams.manager import AgentTeamManager
     app.state.agent_manager = AgentTeamManager(
         event_bus=app.state.event_bus,
+        redis=app.state.redis,
         llm_client=app.state.llm_client,
     )
     logger.info("Agent team manager initialized")
