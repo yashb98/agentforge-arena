@@ -55,6 +55,14 @@ def get_judge_service(request: Request) -> "JudgeService":
     return judge_service
 
 
+def get_llm_client(request: Request) -> "LLMClient":
+    """Get the shared LLM client instance from app state."""
+    from packages.shared.src.llm.client import LLMClient
+
+    llm_client: LLMClient = request.app.state.llm_client
+    return llm_client
+
+
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield a database session with automatic commit/rollback.
 

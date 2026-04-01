@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from uuid import UUID
 
 from packages.shared.src.events.bus import EventBus
@@ -135,75 +136,176 @@ class AutomatedJudge:
 class LLMJudge:
     """Uses Claude Opus 4.6 for subjective evaluation dimensions."""
 
-    def __init__(self, llm_client: object) -> None:
+    # Model used for judging — Opus for highest accuracy
+    JUDGE_MODEL = "claude-opus-4-6"
+
+    def __init__(self, llm_client: object | None) -> None:
         self._llm = llm_client
 
+    async def _call_llm(self, prompt: str, dimension: str) -> tuple[float, str]:
+        """Make an LLM call and parse the JSON score response.
+
+        Returns (score, details). Falls back to 50.0 on any failure.
+        """
+        if self._llm is None:
+            return 50.0, f"LLM client not configured — {dimension} defaulted to 50"
+
+        try:
+            response = await self._llm.completion(  # type: ignore[union-attr]
+                messages=[
+                    {"role": "system", "content": "You are a fair, expert hackathon judge. Always respond with ONLY a JSON object."},
+                    {"role": "user", "content": prompt},
+                ],
+                model=self.JUDGE_MODEL,
+                temperature=0.0,
+                max_tokens=1024,
+                trace_name=f"judge.{dimension}",
+            )
+
+            data = json.loads(response.content)
+            score = float(data.get("score", 50.0))
+            details = str(data.get("details", ""))
+            return max(0.0, min(100.0, score)), details
+
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning("LLM judge parse error for %s: %s", dimension, exc)
+            return 50.0, f"LLM response parse failed — {dimension} defaulted to 50"
+        except Exception:
+            logger.exception("LLM judge call failed for %s", dimension)
+            return 50.0, f"LLM call failed — {dimension} defaulted to 50"
+
+    def _read_workspace_files(self, workspace_path: str, globs: list[str], max_chars: int = 15000) -> str:
+        """Read files matching globs from workspace, truncated to max_chars."""
+        root = Path(workspace_path)
+        parts: list[str] = []
+        total = 0
+        for pattern in globs:
+            for filepath in sorted(root.glob(pattern)):
+                if filepath.is_file():
+                    try:
+                        content = filepath.read_text(errors="replace")
+                        header = f"\n--- {filepath.relative_to(root)} ---\n"
+                        if total + len(header) + len(content) > max_chars:
+                            remaining = max_chars - total - len(header)
+                            if remaining > 200:
+                                parts.append(header + content[:remaining] + "\n[truncated]")
+                            break
+                        parts.append(header + content)
+                        total += len(header) + len(content)
+                    except Exception:
+                        continue
+            if total >= max_chars:
+                break
+        return "".join(parts) or "(no files found)"
+
     async def judge_ux_design(self, workspace_path: str) -> JudgeScore:
-        """Evaluate UX/design quality via LLM review."""
-        # TODO: Take screenshots via headless browser, send to LLM
-        # For now, review the frontend code structure
-        prompt = f"""You are a senior UX reviewer judging a hackathon project.
-Review the frontend code at {workspace_path} and score the UX quality 0-100.
+        """Evaluate UX/design quality via LLM review of frontend code."""
+        code = self._read_workspace_files(workspace_path, [
+            "**/*.tsx", "**/*.jsx", "**/*.css", "**/*.html",
+            "**/tailwind.config.*", "**/globals.css",
+        ])
+        prompt = f"""You are judging a hackathon project's UX/design quality.
+
+Review the frontend code below and score 0-100.
 
 Criteria:
-- Is there a clear user flow?
-- Are there loading states, error states, empty states?
-- Is the design responsive?
-- Is there visual hierarchy and consistent styling?
-- Are there accessibility considerations?
+- Clear user flow and navigation
+- Loading states, error states, empty states
+- Responsive design
+- Visual hierarchy and consistent styling
+- Accessibility considerations (aria labels, semantic HTML)
 
-Respond with ONLY a JSON object: {{"score": <0-100>, "details": "<explanation>"}}"""
+Frontend code:
+{code}
 
-        # TODO: Actually call LLM via LiteLLM
+Respond with ONLY a JSON object: {{"score": <0-100>, "details": "<2-3 sentence explanation>"}}"""
+
+        score, details = await self._call_llm(prompt, "ux_design")
         return JudgeScore(
             dimension="ux_design",
-            score=50.0,  # Placeholder
+            score=score,
             weight=SCORING_WEIGHTS["ux_design"],
             judge_type="llm",
-            details="LLM UX review pending implementation",
+            details=details,
         )
 
     async def judge_architecture(self, workspace_path: str) -> JudgeScore:
         """Evaluate architecture quality via LLM review."""
-        prompt = f"""You are a senior architect reviewing a hackathon project.
-Review ARCHITECTURE.md and the code structure at {workspace_path}.
+        code = self._read_workspace_files(workspace_path, [
+            "ARCHITECTURE.md", "README.md",
+            "**/__init__.py", "**/models.py", "**/routes.py", "**/main.py",
+            "pyproject.toml", "package.json",
+        ])
+        prompt = f"""You are judging a hackathon project's architecture quality.
+
+Review the architecture docs and code structure below. Score 0-100.
 
 Criteria:
 - Clear separation of concerns
-- Appropriate design patterns
+- Appropriate design patterns for the problem
 - Scalability considerations
 - Error handling strategy
-- API design quality
+- API design quality (if applicable)
 
-Score 0-100. Respond with ONLY JSON: {{"score": <0-100>, "details": "<explanation>"}}"""
+Project files:
+{code}
 
+Respond with ONLY a JSON object: {{"score": <0-100>, "details": "<2-3 sentence explanation>"}}"""
+
+        score, details = await self._call_llm(prompt, "architecture")
         return JudgeScore(
             dimension="architecture",
-            score=50.0,  # Placeholder
+            score=score,
             weight=SCORING_WEIGHTS["architecture"],
             judge_type="llm",
-            details="LLM architecture review pending implementation",
+            details=details,
         )
 
     async def judge_innovation(self, workspace_path: str) -> JudgeScore:
         """Evaluate innovation and creative problem-solving."""
+        code = self._read_workspace_files(workspace_path, [
+            "README.md", "ARCHITECTURE.md",
+            "**/*.py", "**/*.ts", "**/*.tsx",
+        ])
+        prompt = f"""You are judging a hackathon project's innovation and creativity.
+
+Review the project below and score 0-100.
+
+Criteria:
+- Novel approach to the problem
+- Creative use of technology
+- Going beyond basic requirements
+- Elegant solutions to complex problems
+- Unique features or capabilities
+
+Project files:
+{code}
+
+Respond with ONLY a JSON object: {{"score": <0-100>, "details": "<2-3 sentence explanation>"}}"""
+
+        score, details = await self._call_llm(prompt, "innovation")
         return JudgeScore(
             dimension="innovation",
-            score=50.0,  # Placeholder
+            score=score,
             weight=SCORING_WEIGHTS["innovation"],
             judge_type="llm",
-            details="LLM innovation review pending implementation",
+            details=details,
         )
 
 
 class JudgeService:
     """Orchestrates the full judging pipeline."""
 
-    def __init__(self, event_bus: EventBus, sandbox_manager: object) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        sandbox_manager: object,
+        llm_client: object | None = None,
+    ) -> None:
         self._events = event_bus
         self._sandbox = sandbox_manager
         self._automated = AutomatedJudge()
-        self._llm = LLMJudge(llm_client=None)  # TODO: Inject LiteLLM client
+        self._llm = LLMJudge(llm_client=llm_client)
 
     async def judge_tournament(
         self,

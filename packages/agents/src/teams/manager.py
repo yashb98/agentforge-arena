@@ -48,11 +48,13 @@ class AgentProcess:
         system_prompt: str,
         workspace_path: str,
         inbox_path: str,
+        llm_client: object | None = None,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
         self.workspace_path = workspace_path
         self.inbox_path = inbox_path
+        self._llm_client = llm_client
         self._process: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
 
@@ -104,7 +106,7 @@ class AgentProcess:
             return []
 
     async def _process_message(self, message: AgentMessage) -> None:
-        """Process a single message from the inbox."""
+        """Process a single message from the inbox via LLM."""
         logger.info(
             "Agent %s processing %s from %s",
             self.agent.role.value,
@@ -116,8 +118,48 @@ class AgentProcess:
         # Mark as read
         await self._mark_read(message.id)
 
-        # TODO: Route to LLM with system prompt + message context
-        # This is where the actual Claude/GPT/etc. call happens via LiteLLM
+        if self._llm_client is None:
+            logger.warning("Agent %s has no LLM client — skipping LLM call", self.agent.role.value)
+            return
+
+        # Build conversation for LLM
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"[{message.message_type.value}] from {message.from_agent.value}:\n"
+                    f"{orjson.dumps(message.payload).decode()}"
+                ),
+            },
+        ]
+
+        try:
+            response = await self._llm_client.completion(  # type: ignore[union-attr]
+                messages=messages,
+                model=self.agent.model,
+                trace_name=f"agent.{self.agent.role.value}.{message.message_type.value}",
+                trace_metadata={
+                    "agent_id": str(self.agent.id),
+                    "team_id": str(self.agent.team_id),
+                    "message_type": message.message_type.value,
+                },
+            )
+
+            # Track token usage
+            self.agent.total_tokens_used += response.usage.total_tokens
+            self.agent.total_cost_usd += response.usage.cost_usd
+
+            logger.debug(
+                "Agent %s LLM response: %d tokens, $%.4f",
+                self.agent.role.value,
+                response.usage.total_tokens,
+                response.usage.cost_usd,
+            )
+
+        except Exception:
+            self.agent.errors_count += 1
+            logger.exception("Agent %s LLM call failed", self.agent.role.value)
 
     async def _mark_read(self, message_id: UUID) -> None:
         """Mark a message as read in the inbox."""
@@ -169,8 +211,9 @@ class AgentProcess:
 class AgentTeamManager:
     """Manages all agent teams across tournaments."""
 
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(self, event_bus: EventBus, llm_client: object | None = None) -> None:
         self._events = event_bus
+        self._llm_client = llm_client
         self._teams: dict[UUID, list[AgentProcess]] = {}
 
     async def spawn_team(
@@ -211,6 +254,7 @@ class AgentTeamManager:
                 system_prompt=system_prompt,
                 workspace_path=workspace_path,
                 inbox_path=inbox_path,
+                llm_client=self._llm_client,
             )
 
             await process.start()

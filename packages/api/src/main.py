@@ -67,6 +67,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # ----- Service Layer Initialization -----
 
+    # LLM Client (via LiteLLM proxy)
+    from packages.shared.src.llm.client import LLMClient
+    langfuse_instance = getattr(app.state, "langfuse", None)
+    app.state.llm_client = LLMClient(langfuse=langfuse_instance)
+    logger.info("LLM client initialized (proxy: %s)", settings.llm.litellm_proxy_url)
+
     # Sandbox Manager
     from packages.sandbox.src.docker.manager import SandboxManager
     app.state.sandbox_manager = SandboxManager()
@@ -74,7 +80,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Agent Team Manager
     from packages.agents.src.teams.manager import AgentTeamManager
-    app.state.agent_manager = AgentTeamManager(event_bus=app.state.event_bus)
+    app.state.agent_manager = AgentTeamManager(
+        event_bus=app.state.event_bus,
+        llm_client=app.state.llm_client,
+    )
     logger.info("Agent team manager initialized")
 
     # Judge Service
@@ -82,6 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.judge_service = JudgeService(
         event_bus=app.state.event_bus,
         sandbox_manager=app.state.sandbox_manager,
+        llm_client=app.state.llm_client,
     )
     logger.info("Judge service initialized")
 
@@ -105,6 +115,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if hasattr(app.state, "sandbox_manager"):
         await app.state.sandbox_manager.destroy_all()
+
+    if hasattr(app.state, "llm_client"):
+        await app.state.llm_client.close()
 
     if hasattr(app.state, "langfuse") and app.state.langfuse:
         app.state.langfuse.flush()
