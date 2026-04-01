@@ -489,6 +489,62 @@ class TournamentOrchestrator:
             )
 
     # ========================================================
+    # Cancellation
+    # ========================================================
+
+    async def cancel_tournament(self, tournament_id: UUID) -> Tournament:
+        """Cancel an active tournament, releasing all resources."""
+        tournament = self._active_tournaments.get(tournament_id)
+        if not tournament:
+            msg = f"Tournament {tournament_id} not found"
+            raise ValueError(msg)
+
+        # Cancel phase timer
+        if tournament_id in self._phase_timers:
+            self._phase_timers[tournament_id].cancel()
+            del self._phase_timers[tournament_id]
+
+        # Cancel health monitor
+        if tournament_id in self._health_tasks:
+            self._health_tasks[tournament_id].cancel()
+            del self._health_tasks[tournament_id]
+
+        # Teardown sandboxes
+        for team_id in tournament.team_ids:
+            try:
+                await self._sandbox.destroy_sandbox(str(team_id))  # type: ignore[attr-defined]
+            except Exception:
+                logger.warning("Failed to destroy sandbox for team %s", team_id)
+
+        tournament.current_phase = TournamentPhase.CANCELLED
+        tournament.completed_at = datetime.utcnow()
+
+        # Persist
+        async with get_session() as session:
+            await session.execute(
+                TournamentDB.__table__.update()  # type: ignore[union-attr]
+                .where(TournamentDB.id == tournament_id)
+                .values(
+                    current_phase=TournamentPhase.CANCELLED.value,
+                    completed_at=tournament.completed_at,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+
+        await self._events.publish(
+            "tournament.cancelled",
+            source="core.orchestrator",
+            tournament_id=tournament_id,
+            payload={
+                "previous_phase": tournament.current_phase.value,
+                "team_count": len(tournament.team_ids),
+            },
+        )
+
+        logger.info("Tournament %s cancelled", tournament_id)
+        return tournament
+
+    # ========================================================
     # Helpers
     # ========================================================
 
@@ -506,13 +562,40 @@ class TournamentOrchestrator:
 
     async def _select_random_challenge(self) -> str:
         """Select a random challenge from the library."""
-        # TODO: Implement challenge library query
-        return "url-shortener-saas"
+        import random
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[4]
+        library_dir = repo_root / "challenges" / "library"
+
+        if not library_dir.is_dir():
+            logger.warning("Challenge library not found at %s", library_dir)
+            return "url-shortener-saas"
+
+        challenges = [
+            d.name for d in library_dir.iterdir()
+            if d.is_dir() and (d / "CHALLENGE.md").is_file()
+        ]
+
+        if not challenges:
+            return "url-shortener-saas"
+
+        selected = random.choice(challenges)
+        logger.info("Selected random challenge: %s", selected)
+        return selected
 
     async def _load_challenge(self, challenge_id: str) -> str:
-        """Load challenge brief markdown."""
-        # TODO: Load from DB/filesystem
-        return f"# Challenge: {challenge_id}\n\nBuild a production-ready application."
+        """Load challenge brief markdown from the library."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[4]
+        challenge_file = repo_root / "challenges" / "library" / challenge_id / "CHALLENGE.md"
+
+        if not challenge_file.is_file():
+            logger.error("Challenge file not found: %s", challenge_file)
+            return f"# Challenge: {challenge_id}\n\nChallenge brief not found."
+
+        return challenge_file.read_text(encoding="utf-8")
 
     def _calculate_rounds(self, format: TournamentFormat, team_count: int) -> int:
         """Calculate total rounds for a tournament format."""

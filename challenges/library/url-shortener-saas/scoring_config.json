@@ -1,0 +1,12 @@
+{
+  "scoring_weights": {
+    "functionality": 0.30,
+    "code_quality": 0.20,
+    "test_coverage": 0.15,
+    "ux_design": 0.15,
+    "architecture": 0.10,
+    "innovation": 0.10
+  },
+  "hidden_test_timeout_seconds": 120,
+  "expected_port": 8000
+}
