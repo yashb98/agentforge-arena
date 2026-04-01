@@ -3,18 +3,21 @@ AgentForge Arena — Agent Team Manager
 
 Manages agent team lifecycle: spawning, health checks, communication, teardown.
 Each agent is an independent process with role-specific system prompts and tools.
+Communication between agents uses Redis-backed mailboxes (atomic LPUSH/BRPOP).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import orjson
+import redis.asyncio as aioredis
 
+from packages.agents.src.communication.mailbox import RedisMailbox
 from packages.shared.src.config import get_settings
 from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
@@ -22,7 +25,6 @@ from packages.shared.src.types.models import (
     AgentMessage,
     AgentRole,
     AgentStatus,
-    ModelProvider,
     TeamConfig,
 )
 
@@ -40,22 +42,21 @@ AGENT_PROMPT_FILES: dict[AgentRole, str] = {
 
 
 class AgentProcess:
-    """Represents a running agent process."""
+    """Represents a running agent process with Redis-backed communication."""
 
     def __init__(
         self,
         agent: Agent,
         system_prompt: str,
         workspace_path: str,
-        inbox_path: str,
+        mailbox: RedisMailbox,
         llm_client: object | None = None,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
         self.workspace_path = workspace_path
-        self.inbox_path = inbox_path
+        self._mailbox = mailbox
         self._llm_client = llm_client
-        self._process: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -66,19 +67,17 @@ class AgentProcess:
         logger.info("Agent %s (%s) started", self.agent.role.value, self.agent.id)
 
     async def _run_loop(self) -> None:
-        """Main agent loop: check inbox, process messages, execute tasks."""
+        """Main agent loop: wait for messages via Redis BRPOP, process them."""
         while self.agent.status not in (AgentStatus.TERMINATED, AgentStatus.ERROR):
             try:
-                # Check for new messages
-                messages = await self._read_inbox()
-                for msg in messages:
-                    await self._process_message(msg)
+                # Blocking wait for next message (5s timeout for heartbeat updates)
+                message = await self._mailbox.receive(self.agent.role, timeout=5.0)
 
-                # Update heartbeat
+                if message is not None:
+                    await self._process_message(message)
+
+                # Update heartbeat regardless
                 self.agent.last_heartbeat = datetime.utcnow()
-
-                # Brief pause between inbox checks
-                await asyncio.sleep(2)
 
             except asyncio.CancelledError:
                 self.agent.status = AgentStatus.TERMINATED
@@ -92,18 +91,8 @@ class AgentProcess:
                 await asyncio.sleep(5)
 
     async def _read_inbox(self) -> list[AgentMessage]:
-        """Read unread messages from the agent's inbox."""
-        inbox_file = Path(self.inbox_path) / f"{self.agent.role.value}.json"
-        if not inbox_file.exists():
-            return []
-
-        try:
-            data = orjson.loads(inbox_file.read_bytes())
-            messages = [AgentMessage.model_validate(m) for m in data if not m.get("read", False)]
-            return messages
-        except Exception:
-            logger.exception("Failed to read inbox for %s", self.agent.role.value)
-            return []
+        """Read all pending messages from Redis mailbox (non-blocking)."""
+        return await self._mailbox.receive_all(self.agent.role)
 
     async def _process_message(self, message: AgentMessage) -> None:
         """Process a single message from the inbox via LLM."""
@@ -114,9 +103,6 @@ class AgentProcess:
             message.from_agent.value,
         )
         self.agent.actions_count += 1
-
-        # Mark as read
-        await self._mark_read(message.id)
 
         if self._llm_client is None:
             logger.warning("Agent %s has no LLM client — skipping LLM call", self.agent.role.value)
@@ -129,7 +115,7 @@ class AgentProcess:
                 "role": "user",
                 "content": (
                     f"[{message.message_type.value}] from {message.from_agent.value}:\n"
-                    f"{orjson.dumps(message.payload).decode()}"
+                    f"{json.dumps(message.payload)}"
                 ),
             },
         ]
@@ -161,33 +147,9 @@ class AgentProcess:
             self.agent.errors_count += 1
             logger.exception("Agent %s LLM call failed", self.agent.role.value)
 
-    async def _mark_read(self, message_id: UUID) -> None:
-        """Mark a message as read in the inbox."""
-        inbox_file = Path(self.inbox_path) / f"{self.agent.role.value}.json"
-        if not inbox_file.exists():
-            return
-
-        data = orjson.loads(inbox_file.read_bytes())
-        for msg in data:
-            if msg.get("id") == str(message_id):
-                msg["read"] = True
-        inbox_file.write_bytes(orjson.dumps(data))
-
     async def send_message(self, message: AgentMessage) -> None:
-        """Send a message to another agent's inbox."""
-        if message.to_agent is None:
-            # Broadcast to all agents in the team
-            target_roles = [r for r in AgentRole if r != self.agent.role]
-        else:
-            target_roles = [message.to_agent]
-
-        for role in target_roles:
-            inbox_file = Path(self.inbox_path) / f"{role.value}.json"
-            existing = []
-            if inbox_file.exists():
-                existing = orjson.loads(inbox_file.read_bytes())
-            existing.append(message.model_dump(mode="json"))
-            inbox_file.write_bytes(orjson.dumps(existing))
+        """Send a message via Redis mailbox."""
+        await self._mailbox.send(message)
 
     async def stop(self) -> None:
         """Stop the agent process."""
@@ -211,10 +173,17 @@ class AgentProcess:
 class AgentTeamManager:
     """Manages all agent teams across tournaments."""
 
-    def __init__(self, event_bus: EventBus, llm_client: object | None = None) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        redis: aioredis.Redis | None = None,
+        llm_client: object | None = None,
+    ) -> None:
         self._events = event_bus
+        self._redis = redis
         self._llm_client = llm_client
         self._teams: dict[UUID, list[AgentProcess]] = {}
+        self._mailboxes: dict[UUID, RedisMailbox] = {}
 
     async def spawn_team(
         self,
@@ -226,7 +195,11 @@ class AgentTeamManager:
         """Spawn all agents for a team. Returns list of agent IDs."""
         settings = get_settings()
         workspace_path = f"{settings.sandbox.workspace_base}/team-{team_id}/project"
-        inbox_path = f"{settings.sandbox.workspace_base}/team-{team_id}/inbox"
+
+        # Create shared Redis mailbox for this team
+        if self._redis is None:
+            raise RuntimeError("Redis not configured — cannot create agent mailbox")
+        mailbox = RedisMailbox(redis=self._redis, team_id=team_id)
 
         agents: list[AgentProcess] = []
         agent_ids: list[UUID] = []
@@ -253,7 +226,7 @@ class AgentTeamManager:
                 agent=agent,
                 system_prompt=system_prompt,
                 workspace_path=workspace_path,
-                inbox_path=inbox_path,
+                mailbox=mailbox,
                 llm_client=self._llm_client,
             )
 
@@ -262,6 +235,7 @@ class AgentTeamManager:
             agent_ids.append(agent.id)
 
         self._teams[team_id] = agents
+        self._mailboxes[team_id] = mailbox
         logger.info("Spawned %d agents for team %s", len(agents), team_id)
         return agent_ids
 
@@ -298,13 +272,20 @@ class AgentTeamManager:
         return [ap.agent for ap in agents]
 
     async def teardown_team(self, team_id: UUID) -> None:
-        """Stop all agents in a team."""
+        """Stop all agents and clean up Redis mailboxes."""
         agents = self._teams.get(team_id, [])
         for ap in agents:
             await ap.stop()
+
+        # Clear Redis mailboxes
+        mailbox = self._mailboxes.get(team_id)
+        if mailbox:
+            await mailbox.clear_team()
+            del self._mailboxes[team_id]
+
         if team_id in self._teams:
             del self._teams[team_id]
-        logger.info("Team %s torn down", team_id)
+        logger.info("Team %s torn down (agents + mailboxes)", team_id)
 
     async def teardown_all(self) -> None:
         """Teardown all teams. Used in shutdown."""
