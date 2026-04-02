@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -94,7 +94,7 @@ class DocumentSyncer:
 
     def _format_entry(self, record: ModuleRecord) -> str:
         """Format a record as a markdown entry."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
         agent_info = f" | **Agent:** {record.agent_role.value}" if record.agent_role else ""
 
         if record.record_type == RecordType.ADR:
@@ -106,11 +106,7 @@ class DocumentSyncer:
             )
 
         if record.record_type == RecordType.GOTCHA:
-            return (
-                f"\n## G: {record.title}\n"
-                f"**Discovered:** {now}{agent_info}\n"
-                f"{record.content}\n"
-            )
+            return f"\n## G: {record.title}\n**Discovered:** {now}{agent_info}\n{record.content}\n"
 
         if record.record_type == RecordType.TECH_DEBT:
             return (
@@ -128,11 +124,7 @@ class DocumentSyncer:
             )
 
         if record.record_type == RecordType.AGENT_LEARNING:
-            return (
-                f"\n## Learning: {record.title}\n"
-                f"**Date:** {now}\n"
-                f"{record.content}\n"
-            )
+            return f"\n## Learning: {record.title}\n**Date:** {now}\n{record.content}\n"
 
         # Default format
         return f"\n## {record.title}\n{record.content}\n"

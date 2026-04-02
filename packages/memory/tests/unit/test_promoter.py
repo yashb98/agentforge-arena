@@ -7,22 +7,22 @@ from uuid import uuid4
 import pytest
 
 from packages.memory.src.compression.promoter import MemoryPromoter
-from packages.memory.src.module.models import ModuleRecord, RecordType
+from packages.memory.src.module.models import RecordType
 from packages.memory.src.working.models import WorkingState
 from packages.shared.src.types.models import AgentRole, TournamentPhase
 
 
-@pytest.fixture()
+@pytest.fixture
 def promoter() -> MemoryPromoter:
     return MemoryPromoter()
 
 
-@pytest.fixture()
+@pytest.fixture
 def team_id():
     return uuid4()
 
 
-@pytest.fixture()
+@pytest.fixture
 def tournament_id():
     return uuid4()
 
@@ -94,9 +94,7 @@ class TestMemoryPromoter:
         records = promoter.promote(state, tournament_id=tournament_id)
         assert len(records) == 0
 
-    def test_frequent_files_promote_as_file_meta(
-        self, promoter, team_id, tournament_id
-    ) -> None:
+    def test_frequent_files_promote_as_file_meta(self, promoter, team_id, tournament_id) -> None:
         """Files touched > 3 times should promote as FILE_META."""
         state = WorkingState(
             agent_id=uuid4(),

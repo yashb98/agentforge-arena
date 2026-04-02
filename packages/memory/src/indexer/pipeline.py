@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from packages.memory.src.indexer.grammars import GrammarLoader
 from packages.memory.src.indexer.parser import CodeParser
 from packages.memory.src.module.models import ModuleRecord, RecordType
 from packages.memory.src.semantic.models import CodeChunk
@@ -74,7 +73,7 @@ class IndexingPipeline:
                         file_path=file_path,
                         title=f"File: {path.name}",
                         content=f"{len(chunks)} chunks, {len(content.splitlines())} lines, language={language}",
-                    )
+                    ),
                 )
 
             except Exception:

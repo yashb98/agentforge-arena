@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import uuid4
-
-import pytest
 
 from packages.memory.src.working.models import WorkingState
 from packages.shared.src.types.models import AgentRole, TournamentPhase

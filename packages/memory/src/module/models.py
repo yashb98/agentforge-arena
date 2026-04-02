@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.shared.src.types.models import AgentRole
 
 
-class RecordType(str, Enum):
+class RecordType(StrEnum):
     """Discriminator for module memory records."""
 
     FILE_META = "file_meta"
@@ -40,9 +40,11 @@ class ModuleRecord(BaseModel):
     file_path: str | None = None
     title: str = Field(description="Short summary for display")
     content: str = Field(description="Full content of the record")
-    metadata: dict[str, Any] = Field(default_factory=dict)  # REASON: arbitrary JSON metadata from agents
+    metadata: dict[str, Any] = Field(
+        default_factory=dict
+    )  # REASON: arbitrary JSON metadata from agents
     agent_id: UUID | None = None
     agent_role: AgentRole | None = None
     synced_to_docs: bool = Field(default=False, description="True once DocumentSyncer processed")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

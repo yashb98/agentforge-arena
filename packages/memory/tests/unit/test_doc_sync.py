@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,8 +10,11 @@ from packages.memory.src.compression.doc_sync import DocumentSyncer
 from packages.memory.src.module.models import ModuleRecord, RecordType
 from packages.shared.src.types.models import AgentRole
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
-@pytest.fixture()
+
+@pytest.fixture
 def workspace(tmp_path) -> Path:
     """Create a temp workspace with .claude/ structure."""
     claude_dir = tmp_path / ".claude"
@@ -31,7 +32,7 @@ def workspace(tmp_path) -> Path:
     return tmp_path
 
 
-@pytest.fixture()
+@pytest.fixture
 def syncer(workspace) -> DocumentSyncer:
     return DocumentSyncer(workspace_path=str(workspace))
 
@@ -40,7 +41,11 @@ class TestDocumentSyncer:
     """Tests for routing records to .md files."""
 
     def test_sync_adr_appends_to_decisions_md(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """ADR records should append to DECISIONS.md."""
         record = ModuleRecord(
@@ -57,7 +62,11 @@ class TestDocumentSyncer:
         assert "Chose bcrypt over argon2" in content
 
     def test_sync_adr_also_appends_to_memory_log(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """ADR should also go to .claude/memory/decisions-log.md."""
         record = ModuleRecord(
@@ -73,7 +82,11 @@ class TestDocumentSyncer:
         assert "Chose bcrypt" in content
 
     def test_sync_gotcha_to_rules_and_memory(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """GOTCHA should go to .claude/rules/gotchas.md AND .claude/memory/gotchas.md."""
         record = ModuleRecord(
@@ -94,7 +107,11 @@ class TestDocumentSyncer:
         assert "Redis drops idle connections" in memory_content
 
     def test_sync_coding_pattern_to_project_rules(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """CODING_PATTERN should go to .claude/rules/project-rules.md."""
         record = ModuleRecord(
@@ -110,7 +127,11 @@ class TestDocumentSyncer:
         assert "Depends()" in content
 
     def test_sync_tech_debt_to_tech_debt_md(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """TECH_DEBT should append to TECH_DEBT.md."""
         record = ModuleRecord(
@@ -125,9 +146,7 @@ class TestDocumentSyncer:
         content = (workspace / "TECH_DEBT.md").read_text()
         assert "UUID workaround" in content
 
-    def test_sync_skips_duplicate_titles(
-        self, syncer, workspace, team_id, tournament_id
-    ) -> None:
+    def test_sync_skips_duplicate_titles(self, syncer, workspace, team_id, tournament_id) -> None:
         """Should not append if the exact title already exists in the file."""
         record = ModuleRecord(
             team_id=team_id,
@@ -143,7 +162,11 @@ class TestDocumentSyncer:
         assert content.count("Chose bcrypt") == 1
 
     def test_sync_returns_synced_record_ids(
-        self, syncer, workspace, team_id, tournament_id
+        self,
+        syncer,
+        workspace,
+        team_id,
+        tournament_id,
     ) -> None:
         """sync() should return the IDs of records it processed."""
         record = ModuleRecord(

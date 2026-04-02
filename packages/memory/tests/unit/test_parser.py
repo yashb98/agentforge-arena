@@ -6,10 +6,9 @@ import pytest
 
 from packages.memory.src.indexer.grammars import GrammarLoader
 from packages.memory.src.indexer.parser import CodeParser
-from packages.memory.src.semantic.models import CodeChunk
 
 
-@pytest.fixture()
+@pytest.fixture
 def parser() -> CodeParser:
     return CodeParser(grammar_loader=GrammarLoader())
 

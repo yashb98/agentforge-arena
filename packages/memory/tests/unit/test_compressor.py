@@ -12,7 +12,7 @@ from packages.memory.src.working.models import WorkingState
 from packages.shared.src.types.models import AgentRole, TournamentPhase
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_llm():
     """Mock LLM client returning a summary."""
     client = MagicMock()
@@ -20,17 +20,17 @@ def mock_llm():
         return_value=MagicMock(
             content="Agent built auth module with bcrypt. Pending: rate limiting.",
             usage=MagicMock(total_tokens=200, cost_usd=0.001),
-        )
+        ),
     )
     return client
 
 
-@pytest.fixture()
+@pytest.fixture
 def compressor(mock_llm) -> ContextCompressor:
     return ContextCompressor(llm_client=mock_llm)
 
 
-@pytest.fixture()
+@pytest.fixture
 def big_state() -> WorkingState:
     return WorkingState(
         agent_id=uuid4(),
@@ -49,26 +49,20 @@ class TestContextCompressor:
     """Tests for Haiku-based context compression."""
 
     @pytest.mark.asyncio
-    async def test_compress_returns_compressed_context(
-        self, compressor, big_state
-    ) -> None:
+    async def test_compress_returns_compressed_context(self, compressor, big_state) -> None:
         """compress() should return a CompressedContext."""
         result = await compressor.compress(big_state)
         assert isinstance(result, CompressedContext)
         assert len(result.summary) > 0
 
     @pytest.mark.asyncio
-    async def test_compress_preserves_top_3_decisions(
-        self, compressor, big_state
-    ) -> None:
+    async def test_compress_preserves_top_3_decisions(self, compressor, big_state) -> None:
         """compress() should preserve the 3 most recent decisions."""
         result = await compressor.compress(big_state)
         assert len(result.preserved_decisions) == 3
 
     @pytest.mark.asyncio
-    async def test_compress_reports_dropped_count(
-        self, compressor, big_state
-    ) -> None:
+    async def test_compress_reports_dropped_count(self, compressor, big_state) -> None:
         """compress() should report how many items were dropped."""
         result = await compressor.compress(big_state)
         assert result.dropped_count > 0

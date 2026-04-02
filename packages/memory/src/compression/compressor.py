@@ -75,5 +75,5 @@ class ContextCompressor:
                 "context_summary": compressed.summary,
                 "recent_decisions": compressed.preserved_decisions,
                 "recent_files_touched": state.recent_files_touched[-10:],
-            }
+            },
         )

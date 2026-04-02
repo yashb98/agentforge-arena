@@ -11,12 +11,36 @@ from packages.memory.src.working.models import WorkingState
 
 # Keyword patterns per record type (case-insensitive)
 PROMOTION_RULES: list[tuple[RecordType, re.Pattern[str]]] = [
-    (RecordType.ADR, re.compile(r"\b(chose|decided|architecture|design|picked|selected)\b", re.I)),
-    (RecordType.TECH_DEBT, re.compile(r"\b(bug|fix|workaround|hack|TODO|FIXME|shortcut)\b", re.I)),
-    (RecordType.GOTCHA, re.compile(r"\b(gotcha|careful|don'?t|never|always|footgun|breaks|beware)\b", re.I)),
-    (RecordType.CODING_PATTERN, re.compile(r"\b(pattern|convention|must use|should use|prefer|standard)\b", re.I)),
-    (RecordType.AGENT_LEARNING, re.compile(r"\b(learned|discovered|realized|turns out|insight|found that)\b", re.I)),
-    (RecordType.HOOK_DISCOVERY, re.compile(r"\b(formatter|linter|hook|auto-format|pre-commit|ruff|eslint)\b", re.I)),
+    (
+        RecordType.ADR,
+        re.compile(r"\b(chose|decided|architecture|design|picked|selected)\b", re.IGNORECASE),
+    ),
+    (
+        RecordType.TECH_DEBT,
+        re.compile(r"\b(bug|fix|workaround|hack|TODO|FIXME|shortcut)\b", re.IGNORECASE),
+    ),
+    (
+        RecordType.GOTCHA,
+        re.compile(
+            r"\b(gotcha|careful|don'?t|never|always|footgun|breaks|beware)\b", re.IGNORECASE
+        ),
+    ),
+    (
+        RecordType.CODING_PATTERN,
+        re.compile(r"\b(pattern|convention|must use|should use|prefer|standard)\b", re.IGNORECASE),
+    ),
+    (
+        RecordType.AGENT_LEARNING,
+        re.compile(
+            r"\b(learned|discovered|realized|turns out|insight|found that)\b", re.IGNORECASE
+        ),
+    ),
+    (
+        RecordType.HOOK_DISCOVERY,
+        re.compile(
+            r"\b(formatter|linter|hook|auto-format|pre-commit|ruff|eslint)\b", re.IGNORECASE
+        ),
+    ),
 ]
 
 # Files touched more than this many times get promoted as FILE_META
@@ -52,7 +76,7 @@ class MemoryPromoter:
                         content=decision,
                         agent_id=state.agent_id,
                         agent_role=state.role,
-                    )
+                    ),
                 )
 
         # Promote frequently-touched files
@@ -70,7 +94,7 @@ class MemoryPromoter:
                         content=f"Modified {count} times during this sprint.",
                         agent_id=state.agent_id,
                         agent_role=state.role,
-                    )
+                    ),
                 )
 
         return records

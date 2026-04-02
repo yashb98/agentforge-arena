@@ -75,7 +75,7 @@ class SemanticStore:
         embeddings = await self._embedder.embed_bulk(contents)  # type: ignore[union-attr]
 
         points = []
-        for chunk, embedding in zip(chunks, embeddings):
+        for chunk, embedding in zip(chunks, embeddings, strict=True):
             payload = {
                 "file_path": chunk.file_path,
                 "language": chunk.language,
@@ -98,7 +98,7 @@ class SemanticStore:
                     id=chunk.chunk_id,
                     vector=vectors,
                     payload=payload,
-                )
+                ),
             )
 
         await self._qdrant.upsert(  # type: ignore[union-attr]
@@ -120,7 +120,7 @@ class SemanticStore:
         search_filter = None
         if file_filter:
             search_filter = Filter(
-                must=[FieldCondition(key="file_path", match=MatchValue(value=file_filter))]
+                must=[FieldCondition(key="file_path", match=MatchValue(value=file_filter))],
             )
 
         points = await self._qdrant.search(  # type: ignore[union-attr]
@@ -156,7 +156,7 @@ class SemanticStore:
                     score=point.score,
                     chunk=chunk,
                     snippet=snippet,
-                )
+                ),
             )
 
         return results
@@ -167,8 +167,8 @@ class SemanticStore:
             collection_name=self.collection_name,
             points_selector=models.FilterSelector(
                 filter=Filter(
-                    must=[FieldCondition(key="file_path", match=MatchValue(value=file_path))]
-                )
+                    must=[FieldCondition(key="file_path", match=MatchValue(value=file_path))],
+                ),
             ),
         )
         logger.debug("Deleted points for file: %s", file_path)

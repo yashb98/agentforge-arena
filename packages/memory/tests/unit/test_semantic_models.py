@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
-
 from packages.memory.src.module.models import ModuleRecord, RecordType
 from packages.memory.src.semantic.models import CodeChunk, MemoryContext, SearchResult
 from packages.memory.src.working.models import WorkingState

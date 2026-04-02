@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from unittest.mock import AsyncMock
 
-import orjson
 import pytest
 
 from packages.memory.src.working.models import WorkingState
@@ -14,12 +11,12 @@ from packages.memory.src.working.store import WorkingMemoryStore
 from packages.shared.src.types.models import AgentRole, TournamentPhase
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(mock_redis, team_id) -> WorkingMemoryStore:
     return WorkingMemoryStore(redis=mock_redis, team_id=team_id)
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_state(agent_id, team_id) -> WorkingState:
     return WorkingState(
         agent_id=agent_id,
@@ -40,9 +37,7 @@ class TestWorkingMemoryStore:
         assert "builder" in key
 
     @pytest.mark.asyncio
-    async def test_save_and_load_roundtrip(
-        self, store, mock_redis, agent_id, sample_state
-    ) -> None:
+    async def test_save_and_load_roundtrip(self, store, mock_redis, agent_id, sample_state) -> None:
         """save() then load() should return equivalent state."""
         # Configure mock to return what was saved
         saved_data = {}
@@ -52,9 +47,7 @@ class TestWorkingMemoryStore:
             saved_data["value"] = value
 
         mock_redis.set = AsyncMock(side_effect=capture_set)
-        mock_redis.get = AsyncMock(
-            side_effect=lambda key: saved_data.get("value")
-        )
+        mock_redis.get = AsyncMock(side_effect=lambda key: saved_data.get("value"))
 
         await store.save(sample_state)
         mock_redis.set.assert_called_once()
@@ -83,14 +76,10 @@ class TestWorkingMemoryStore:
         mock_redis.expire.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_exceeds_threshold_true_when_over(
-        self, store, mock_redis, sample_state
-    ) -> None:
+    async def test_exceeds_threshold_true_when_over(self, store, mock_redis, sample_state) -> None:
         """exceeds_threshold() should return True when tokens > threshold."""
         # Create a state with a lot of content
-        big_state = sample_state.model_copy(
-            update={"context_summary": "x" * 10000}
-        )
+        big_state = sample_state.model_copy(update={"context_summary": "x" * 10000})
         data = big_state.model_dump_json().encode()
         mock_redis.get = AsyncMock(return_value=data)
         result = await store.exceeds_threshold(AgentRole.BUILDER, threshold=2000)
@@ -98,7 +87,10 @@ class TestWorkingMemoryStore:
 
     @pytest.mark.asyncio
     async def test_exceeds_threshold_false_when_under(
-        self, store, mock_redis, sample_state
+        self,
+        store,
+        mock_redis,
+        sample_state,
     ) -> None:
         """exceeds_threshold() should return False when tokens < threshold."""
         data = sample_state.model_dump_json().encode()

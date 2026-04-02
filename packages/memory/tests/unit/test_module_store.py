@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -12,7 +12,7 @@ from packages.memory.src.module.store import ModuleMemoryStore
 from packages.shared.src.types.models import AgentRole
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_session():
     """Create a mock async SQLAlchemy session."""
     session = MagicMock()
@@ -24,7 +24,7 @@ def mock_session():
     return session
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_session_factory(mock_session):
     """Create a mock session context manager factory."""
     from contextlib import asynccontextmanager
@@ -36,7 +36,7 @@ def mock_session_factory(mock_session):
     return factory
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(mock_session_factory, team_id, tournament_id) -> ModuleMemoryStore:
     return ModuleMemoryStore(
         session_factory=mock_session_factory,
@@ -45,7 +45,7 @@ def store(mock_session_factory, team_id, tournament_id) -> ModuleMemoryStore:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_record(team_id, tournament_id) -> ModuleRecord:
     return ModuleRecord(
         team_id=team_id,

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from packages.memory.src.compression.compressor import ContextCompressor
 from packages.memory.src.compression.doc_sync import DocumentSyncer
 from packages.memory.src.compression.promoter import MemoryPromoter
 from packages.memory.src.module.models import ModuleRecord, RecordType
-from packages.memory.src.semantic.models import MemoryContext, SearchResult
+from packages.memory.src.semantic.models import MemoryContext
 from packages.memory.src.working.models import WorkingState
 from packages.shared.src.types.models import AgentRole, TournamentPhase
 
@@ -80,12 +80,14 @@ class MemoryManager:
 
         # L2: Query module memory (hybrid SQL + full-text)
         module_results = await self._module.search_fulltext(  # type: ignore[union-attr]
-            query, limit=max_module_results
+            query,
+            limit=max_module_results,
         )
 
         # L3: Query semantic memory (Qdrant vector search)
         semantic_results = await self._semantic.search(  # type: ignore[union-attr]
-            query, limit=max_semantic_results
+            query,
+            limit=max_semantic_results,
         )
 
         # Estimate total tokens
@@ -127,7 +129,7 @@ class MemoryManager:
             )
 
         # Update L1 fields
-        updates: dict = {"last_updated": datetime.now(timezone.utc)}
+        updates: dict = {"last_updated": datetime.now(UTC)}
         if task is not None:
             updates["current_task"] = task
         if file_touched is not None:
@@ -176,7 +178,8 @@ class MemoryManager:
 
         # 1. Promote important items from L1 to L2
         promoted_records = self._promoter.promote(
-            state, tournament_id=self._tournament_id
+            state,
+            tournament_id=self._tournament_id,
         )
         if promoted_records:
             await self._module.insert_batch(promoted_records)  # type: ignore[union-attr]

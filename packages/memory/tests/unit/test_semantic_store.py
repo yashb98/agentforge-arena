@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from packages.memory.src.semantic.models import CodeChunk, SearchResult
+from packages.memory.src.semantic.models import CodeChunk
 from packages.memory.src.semantic.store import SemanticStore
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(mock_qdrant, team_id) -> SemanticStore:
     mock_embedder = MagicMock()
     mock_embedder.embed_query = AsyncMock(return_value=[0.1] * 384)
@@ -22,7 +21,7 @@ def store(mock_qdrant, team_id) -> SemanticStore:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_chunks() -> list[CodeChunk]:
     return [
         CodeChunk(
@@ -58,27 +57,21 @@ class TestSemanticStore:
         assert str(team_id) in store.collection_name
 
     @pytest.mark.asyncio
-    async def test_ensure_collection_creates_if_missing(
-        self, store, mock_qdrant
-    ) -> None:
+    async def test_ensure_collection_creates_if_missing(self, store, mock_qdrant) -> None:
         """ensure_collection() should create collection if it doesn't exist."""
         mock_qdrant.collection_exists = AsyncMock(return_value=False)
         await store.ensure_collection()
         mock_qdrant.create_collection.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_ensure_collection_skips_if_exists(
-        self, store, mock_qdrant
-    ) -> None:
+    async def test_ensure_collection_skips_if_exists(self, store, mock_qdrant) -> None:
         """ensure_collection() should skip if collection exists."""
         mock_qdrant.collection_exists = AsyncMock(return_value=True)
         await store.ensure_collection()
         mock_qdrant.create_collection.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_upsert_chunks(
-        self, store, mock_qdrant, sample_chunks
-    ) -> None:
+    async def test_upsert_chunks(self, store, mock_qdrant, sample_chunks) -> None:
         """upsert() should call Qdrant upsert with correct data."""
         mock_embedder = store._embedder
         mock_embedder.embed_bulk = AsyncMock(return_value=[[0.1] * 384, [0.2] * 384])

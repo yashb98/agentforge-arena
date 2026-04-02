@@ -24,7 +24,7 @@ def select_by_type(
             and_(
                 ModuleMemoryDB.team_id == team_id,
                 ModuleMemoryDB.record_type == record_type.value,
-            )
+            ),
         )
         .order_by(ModuleMemoryDB.created_at.desc())
         .limit(limit)
@@ -46,7 +46,7 @@ def select_by_module(
             and_(
                 ModuleMemoryDB.team_id == team_id,
                 ModuleMemoryDB.module_name == module_name,
-            )
+            ),
         )
         .order_by(ModuleMemoryDB.created_at.desc())
         .limit(limit)
@@ -63,7 +63,7 @@ def select_unsynced(team_id: UUID) -> Select:  # type: ignore[type-arg]
             and_(
                 ModuleMemoryDB.team_id == team_id,
                 ModuleMemoryDB.synced_to_docs == False,  # noqa: E712
-            )
+            ),
         )
         .order_by(ModuleMemoryDB.created_at.asc())
     )
@@ -74,9 +74,7 @@ def update_synced(record_ids: list[UUID]) -> update:  # type: ignore[type-arg]
     from packages.memory.src.module.store import ModuleMemoryDB
 
     return (
-        update(ModuleMemoryDB)
-        .where(ModuleMemoryDB.id.in_(record_ids))
-        .values(synced_to_docs=True)
+        update(ModuleMemoryDB).where(ModuleMemoryDB.id.in_(record_ids)).values(synced_to_docs=True)
     )
 
 
@@ -91,7 +89,7 @@ def select_fulltext(team_id: UUID, query: str, *, limit: int = 10) -> Select:  #
             and_(
                 ModuleMemoryDB.team_id == team_id,
                 ModuleMemoryDB.ts_vector.op("@@")(ts_query),
-            )
+            ),
         )
         .order_by(func.ts_rank(ModuleMemoryDB.ts_vector, ts_query).desc())
         .limit(limit)

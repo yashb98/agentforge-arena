@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -26,7 +26,7 @@ class WorkingState(BaseModel):
     active_errors: list[str] = Field(default_factory=list, description="Uncapped")
     context_summary: str = Field(default="", description="Compressed summary from overflow handler")
     token_budget_used: int = Field(default=0, ge=0)
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
     def cap_lists(self) -> WorkingState:

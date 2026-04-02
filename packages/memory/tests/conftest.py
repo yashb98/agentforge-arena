@@ -7,25 +7,23 @@ from uuid import uuid4
 
 import pytest
 
-from packages.shared.src.types.models import AgentRole, TournamentPhase
 
-
-@pytest.fixture()
+@pytest.fixture
 def team_id():
     return uuid4()
 
 
-@pytest.fixture()
+@pytest.fixture
 def tournament_id():
     return uuid4()
 
 
-@pytest.fixture()
+@pytest.fixture
 def agent_id():
     return uuid4()
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_redis():
     """Create a mock async Redis client."""
     r = MagicMock()
@@ -39,7 +37,7 @@ def mock_redis():
     return r
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_qdrant():
     """Create a mock QdrantClient."""
     client = MagicMock()

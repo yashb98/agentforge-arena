@@ -9,12 +9,12 @@ import pytest
 
 from packages.memory.src.manager import MemoryManager
 from packages.memory.src.module.models import ModuleRecord, RecordType
-from packages.memory.src.semantic.models import MemoryContext, SearchResult
+from packages.memory.src.semantic.models import MemoryContext
 from packages.memory.src.working.models import WorkingState
 from packages.shared.src.types.models import AgentRole, TournamentPhase
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_working_store():
     store = MagicMock()
     store.save = AsyncMock()
@@ -25,14 +25,14 @@ def mock_working_store():
             role=AgentRole.BUILDER,
             current_phase=TournamentPhase.BUILD,
             current_task="Build auth",
-        )
+        ),
     )
     store.delete = AsyncMock()
     store.exceeds_threshold = AsyncMock(return_value=False)
     return store
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_module_store():
     store = MagicMock()
     store.insert = AsyncMock()
@@ -44,7 +44,7 @@ def mock_module_store():
     return store
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_semantic_store():
     store = MagicMock()
     store.search = AsyncMock(return_value=[])
@@ -52,7 +52,7 @@ def mock_semantic_store():
     return store
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_compressor():
     comp = MagicMock()
     comp.compress = AsyncMock()
@@ -60,21 +60,21 @@ def mock_compressor():
     return comp
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_promoter():
     prom = MagicMock()
     prom.promote = MagicMock(return_value=[])
     return prom
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_doc_syncer():
     ds = MagicMock()
     ds.sync = MagicMock(return_value=[])
     return ds
 
 
-@pytest.fixture()
+@pytest.fixture
 def manager(
     mock_working_store,
     mock_module_store,
@@ -109,7 +109,12 @@ class TestMemoryManagerRecall:
 
     @pytest.mark.asyncio
     async def test_recall_reads_all_3_layers(
-        self, manager, mock_working_store, mock_module_store, mock_semantic_store, agent_id
+        self,
+        manager,
+        mock_working_store,
+        mock_module_store,
+        mock_semantic_store,
+        agent_id,
     ) -> None:
         """recall() should query L1, L2, and L3."""
         await manager.recall(agent_id, AgentRole.BUILDER, "auth")
@@ -119,7 +124,11 @@ class TestMemoryManagerRecall:
 
     @pytest.mark.asyncio
     async def test_recall_triggers_overflow_when_exceeded(
-        self, manager, mock_working_store, mock_compressor, agent_id
+        self,
+        manager,
+        mock_working_store,
+        mock_compressor,
+        agent_id,
     ) -> None:
         """recall() should trigger overflow handler when L1 exceeds threshold."""
         mock_working_store.exceeds_threshold = AsyncMock(return_value=True)
@@ -128,7 +137,7 @@ class TestMemoryManagerRecall:
                 summary="compressed",
                 preserved_decisions=[],
                 dropped_count=5,
-            )
+            ),
         )
         mock_compressor.apply = MagicMock(
             return_value=WorkingState(
@@ -137,7 +146,7 @@ class TestMemoryManagerRecall:
                 role=AgentRole.BUILDER,
                 current_phase=TournamentPhase.BUILD,
                 context_summary="compressed",
-            )
+            ),
         )
         await manager.recall(agent_id, AgentRole.BUILDER, "query")
         mock_compressor.compress.assert_called_once()
@@ -147,9 +156,7 @@ class TestMemoryManagerRecord:
     """Tests for MemoryManager.record()."""
 
     @pytest.mark.asyncio
-    async def test_record_updates_l1(
-        self, manager, mock_working_store, agent_id
-    ) -> None:
+    async def test_record_updates_l1(self, manager, mock_working_store, agent_id) -> None:
         """record() should update working state in Redis."""
         await manager.record(
             agent_id,
@@ -161,7 +168,10 @@ class TestMemoryManagerRecord:
 
     @pytest.mark.asyncio
     async def test_record_with_decision_updates_decisions(
-        self, manager, mock_working_store, agent_id
+        self,
+        manager,
+        mock_working_store,
+        agent_id,
     ) -> None:
         """record() with decision should append to recent_decisions."""
         await manager.record(
@@ -173,7 +183,12 @@ class TestMemoryManagerRecord:
 
     @pytest.mark.asyncio
     async def test_record_with_module_records_inserts_to_l2(
-        self, manager, mock_module_store, agent_id, team_id, tournament_id
+        self,
+        manager,
+        mock_module_store,
+        agent_id,
+        team_id,
+        tournament_id,
     ) -> None:
         """record() with module_records should insert to L2."""
         records = [
@@ -184,11 +199,9 @@ class TestMemoryManagerRecord:
                 module_name="auth",
                 title="Test ADR",
                 content="Content.",
-            )
+            ),
         ]
-        await manager.record(
-            agent_id, AgentRole.BUILDER, module_records=records
-        )
+        await manager.record(agent_id, AgentRole.BUILDER, module_records=records)
         mock_module_store.insert_batch.assert_called_once()
 
 
@@ -196,17 +209,13 @@ class TestMemoryManagerLifecycle:
     """Tests for initialize/teardown."""
 
     @pytest.mark.asyncio
-    async def test_initialize_creates_l1(
-        self, manager, mock_working_store, agent_id
-    ) -> None:
+    async def test_initialize_creates_l1(self, manager, mock_working_store, agent_id) -> None:
         """initialize() should create L1 state."""
         await manager.initialize(agent_id, AgentRole.BUILDER)
         mock_working_store.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_teardown_deletes_l1(
-        self, manager, mock_working_store, agent_id
-    ) -> None:
+    async def test_teardown_deletes_l1(self, manager, mock_working_store, agent_id) -> None:
         """teardown() should delete L1 state."""
         await manager.teardown(agent_id, AgentRole.BUILDER)
         mock_working_store.delete.assert_called_once()

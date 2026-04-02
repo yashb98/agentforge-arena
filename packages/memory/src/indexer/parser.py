@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from packages.memory.src.indexer.grammars import GrammarLoader
 from packages.memory.src.semantic.models import CodeChunk
@@ -13,8 +12,18 @@ logger = logging.getLogger(__name__)
 # tree-sitter node types to extract per language
 SYMBOL_NODE_TYPES: dict[str, set[str]] = {
     "python": {"function_definition", "class_definition"},
-    "javascript": {"function_declaration", "class_declaration", "arrow_function", "export_statement"},
-    "typescript": {"function_declaration", "class_declaration", "arrow_function", "export_statement"},
+    "javascript": {
+        "function_declaration",
+        "class_declaration",
+        "arrow_function",
+        "export_statement",
+    },
+    "typescript": {
+        "function_declaration",
+        "class_declaration",
+        "arrow_function",
+        "export_statement",
+    },
 }
 
 # Lines threshold: files shorter than this get a single chunk
@@ -61,7 +70,11 @@ class CodeParser:
         parser = self._grammars.get_parser(language)
         if parser is not None:
             chunks = self._parse_with_treesitter(
-                parser, content, file_path, language, module_name
+                parser,
+                content,
+                file_path,
+                language,
+                module_name,
             )
             if chunks:
                 return chunks
@@ -70,7 +83,11 @@ class CodeParser:
         return [self._whole_file_chunk(content, file_path, language, module_name)]
 
     def _whole_file_chunk(
-        self, content: str, file_path: str, language: str, module_name: str
+        self,
+        content: str,
+        file_path: str,
+        language: str,
+        module_name: str,
     ) -> CodeChunk:
         """Create a single chunk for the entire file."""
         return CodeChunk(
@@ -102,7 +119,7 @@ class CodeParser:
             if node.type in node_types:  # type: ignore[union-attr]
                 start_line = node.start_point[0] + 1  # type: ignore[union-attr]
                 end_line = node.end_point[0] + 1  # type: ignore[union-attr]
-                text = content.encode()[node.start_byte:node.end_byte].decode()  # type: ignore[union-attr]
+                text = content.encode()[node.start_byte : node.end_byte].decode()  # type: ignore[union-attr]
 
                 symbol_name = self._extract_name(node, language)
                 symbol_type = self._node_type_to_symbol_type(node.type)  # type: ignore[union-attr]
@@ -120,7 +137,7 @@ class CodeParser:
                         docstring=docstring,
                         line_start=start_line,
                         line_end=end_line,
-                    )
+                    ),
                 )
 
             for child in node.children:  # type: ignore[union-attr]
@@ -149,7 +166,10 @@ class CodeParser:
         return "function"
 
     def _extract_docstring(
-        self, node: object, language: str, content: str
+        self,
+        node: object,
+        language: str,
+        content: str,
     ) -> str | None:
         """Extract docstring from a Python function/class."""
         if language != "python":
@@ -161,13 +181,20 @@ class CodeParser:
                         for expr in stmt.children:  # type: ignore[union-attr]
                             if expr.type == "string":  # type: ignore[union-attr]
                                 raw = expr.text.decode()  # type: ignore[union-attr]
-                                return raw.strip('"""').strip("'''").strip()
+                                for delim in ('"""', "'''"):
+                                    if raw.startswith(delim) and raw.endswith(delim):
+                                        raw = raw[3:-3]
+                                        break
+                                return raw.strip()
                         break
                 break
         return None
 
     def _parse_markdown(
-        self, content: str, file_path: str, module_name: str
+        self,
+        content: str,
+        file_path: str,
+        module_name: str,
     ) -> list[CodeChunk]:
         """Split markdown by ## headings."""
         sections: list[CodeChunk] = []
@@ -191,7 +218,7 @@ class CodeParser:
                             content=section_content,
                             line_start=current_start,
                             line_end=i - 1,
-                        )
+                        ),
                     )
                 current_heading = line[3:].strip()
                 current_lines = [line]
@@ -212,7 +239,7 @@ class CodeParser:
                     content="\n".join(current_lines),
                     line_start=current_start,
                     line_end=current_start + len(current_lines) - 1,
-                )
+                ),
             )
 
-        return sections if sections else [self._whole_file_chunk(content, file_path, "markdown", module_name)]
+        return sections or [self._whole_file_chunk(content, file_path, "markdown", module_name)]

@@ -6,12 +6,11 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,7 +121,10 @@ class ModuleMemoryStore:
             await session.flush()
 
     async def get_by_type(
-        self, record_type: RecordType, *, limit: int = 50
+        self,
+        record_type: RecordType,
+        *,
+        limit: int = 50,
     ) -> list[ModuleRecord]:
         """Get records by type for this team."""
         async with self._session_factory() as session:
@@ -132,7 +134,10 @@ class ModuleMemoryStore:
             return [self._from_db(row) for row in rows]
 
     async def get_by_module(
-        self, module_name: str, *, limit: int = 20
+        self,
+        module_name: str,
+        *,
+        limit: int = 20,
     ) -> list[ModuleRecord]:
         """Get records for a specific module."""
         async with self._session_factory() as session:

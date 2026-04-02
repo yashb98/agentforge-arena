@@ -1,5 +1,4 @@
-"""
-AgentForge Arena — Agent Memory System
+"""AgentForge Arena — Agent Memory System
 
 Three-layer memory architecture:
   L1 Working Memory  — per-agent Redis state (fast, ephemeral)
