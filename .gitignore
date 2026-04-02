@@ -48,6 +48,9 @@ out/
 .DS_Store
 Thumbs.db
 
+# Worktrees
+.worktrees/
+
 # Secrets (NEVER commit these)
 *.pem
 *.key
