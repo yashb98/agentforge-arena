@@ -78,14 +78,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.sandbox_manager = SandboxManager()
     logger.info("Sandbox manager initialized")
 
-    # Agent Team Manager
+    # Agent Team Manager (with memory factory support)
     from packages.agents.src.teams.manager import AgentTeamManager
     app.state.agent_manager = AgentTeamManager(
         event_bus=app.state.event_bus,
         redis=app.state.redis,
         llm_client=app.state.llm_client,
+        memory_factory=None,  # Wire MemoryFactory when infra is provisioned
     )
-    logger.info("Agent team manager initialized")
+    logger.info("Agent team manager initialized (memory: lazy per-team)")
 
     # Judge Service
     from packages.judge.src.scoring.service import JudgeService

@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import redis.asyncio as aioredis
 
 from packages.agents.src.communication.mailbox import RedisMailbox
+from packages.memory.src.manager import MemoryManager
 from packages.shared.src.config import get_settings
 from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
@@ -51,12 +52,14 @@ class AgentProcess:
         workspace_path: str,
         mailbox: RedisMailbox,
         llm_client: object | None = None,
+        memory: MemoryManager | None = None,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
         self.workspace_path = workspace_path
         self._mailbox = mailbox
         self._llm_client = llm_client
+        self._memory = memory
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -108,9 +111,23 @@ class AgentProcess:
             logger.warning("Agent %s has no LLM client — skipping LLM call", self.agent.role.value)
             return
 
+        # Recall memory context before LLM call
+        memory_context_text = ""
+        if self._memory is not None:
+            try:
+                query = json.dumps(message.payload)[:500]
+                ctx = await self._memory.recall(self.agent.id, self.agent.role, query)
+                memory_context_text = ctx.format_for_prompt()
+            except Exception:
+                logger.warning("Memory recall failed for %s", self.agent.role.value, exc_info=True)
+
         # Build conversation for LLM
-        messages = [
+        messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt},
+        ]
+        if memory_context_text:
+            messages.append({"role": "system", "content": memory_context_text})
+        messages.append(
             {
                 "role": "user",
                 "content": (
@@ -118,7 +135,7 @@ class AgentProcess:
                     f"{json.dumps(message.payload)}"
                 ),
             },
-        ]
+        )
 
         try:
             response = await self._llm_client.completion(  # type: ignore[union-attr]
@@ -135,6 +152,17 @@ class AgentProcess:
             # Track token usage
             self.agent.total_tokens_used += response.usage.total_tokens
             self.agent.total_cost_usd += response.usage.cost_usd
+
+            # Record to memory after LLM call
+            if self._memory is not None:
+                try:
+                    await self._memory.record(
+                        self.agent.id,
+                        self.agent.role,
+                        action_summary=f"Processed {message.message_type.value} from {message.from_agent.value}",
+                    )
+                except Exception:
+                    logger.warning("Memory record failed for %s", self.agent.role.value, exc_info=True)
 
             logger.debug(
                 "Agent %s LLM response: %d tokens, $%.4f",
@@ -178,12 +206,16 @@ class AgentTeamManager:
         event_bus: EventBus,
         redis: aioredis.Redis | None = None,
         llm_client: object | None = None,
+        memory_factory: object | None = None,
     ) -> None:
         self._events = event_bus
         self._redis = redis
         self._llm_client = llm_client
+        self._memory_factory = memory_factory
         self._teams: dict[UUID, list[AgentProcess]] = {}
         self._mailboxes: dict[UUID, RedisMailbox] = {}
+        self._memory_managers: dict[UUID, MemoryManager] = {}
+        self._watchers: dict[UUID, object] = {}
 
     async def spawn_team(
         self,
@@ -200,6 +232,20 @@ class AgentTeamManager:
         if self._redis is None:
             raise RuntimeError("Redis not configured — cannot create agent mailbox")
         mailbox = RedisMailbox(redis=self._redis, team_id=team_id)
+
+        # Create shared MemoryManager for this team
+        memory_mgr: MemoryManager | None = None
+        if self._memory_factory is not None:
+            try:
+                memory_mgr = await self._memory_factory.create_for_team(  # type: ignore[union-attr]
+                    team_id=team_id,
+                    tournament_id=tournament_id,
+                    workspace_path=workspace_path,
+                )
+                self._memory_managers[team_id] = memory_mgr
+                logger.info("Memory system initialized for team %s", team_id)
+            except Exception:
+                logger.warning("Memory system init failed for team %s", team_id, exc_info=True)
 
         agents: list[AgentProcess] = []
         agent_ids: list[UUID] = []
@@ -228,11 +274,16 @@ class AgentTeamManager:
                 workspace_path=workspace_path,
                 mailbox=mailbox,
                 llm_client=self._llm_client,
+                memory=memory_mgr,
             )
 
             await process.start()
             agents.append(process)
             agent_ids.append(agent.id)
+
+            # Initialize L1 working memory for this agent
+            if memory_mgr is not None:
+                await memory_mgr.initialize(agent.id, agent_config.role)
 
         self._teams[team_id] = agents
         self._mailboxes[team_id] = mailbox
@@ -272,10 +323,23 @@ class AgentTeamManager:
         return [ap.agent for ap in agents]
 
     async def teardown_team(self, team_id: UUID) -> None:
-        """Stop all agents and clean up Redis mailboxes."""
+        """Stop all agents and clean up Redis mailboxes + memory."""
         agents = self._teams.get(team_id, [])
         for ap in agents:
             await ap.stop()
+
+        # Teardown memory (L1 only — L2/L3 persist)
+        memory_mgr = self._memory_managers.get(team_id)
+        if memory_mgr is not None:
+            for ap in agents:
+                await memory_mgr.teardown(ap.agent.id, ap.agent.role)
+            del self._memory_managers[team_id]
+
+        # Stop codebase watcher
+        watcher = self._watchers.get(team_id)
+        if watcher is not None:
+            await watcher.stop()  # type: ignore[union-attr]
+            del self._watchers[team_id]
 
         # Clear Redis mailboxes
         mailbox = self._mailboxes.get(team_id)
@@ -285,7 +349,7 @@ class AgentTeamManager:
 
         if team_id in self._teams:
             del self._teams[team_id]
-        logger.info("Team %s torn down (agents + mailboxes)", team_id)
+        logger.info("Team %s torn down (agents + mailboxes + memory)", team_id)
 
     async def teardown_all(self) -> None:
         """Teardown all teams. Used in shutdown."""
