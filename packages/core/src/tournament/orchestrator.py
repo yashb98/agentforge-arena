@@ -123,6 +123,7 @@ class TournamentOrchestrator:
         self._active_tournaments: dict[UUID, Tournament] = {}
         self._phase_timers: dict[UUID, asyncio.Task[None]] = {}
         self._health_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._team_hierarchy: dict[UUID, dict[UUID, list[UUID]]] = {}
 
     # ========================================================
     # Tournament Lifecycle
@@ -144,6 +145,7 @@ class TournamentOrchestrator:
         challenge_id = config.challenge_id or await self._select_random_challenge()
 
         self._validate_challenge_library_entry(challenge_id)
+        self._validate_team_names(config)
 
         # Calculate rounds
         total_rounds = self._calculate_rounds(config.format, len(config.teams))
@@ -200,6 +202,9 @@ class TournamentOrchestrator:
         tournament.started_at = datetime.utcnow()
 
         # 1. Provision sandboxes for each team
+        team_id_to_name: dict[UUID, str] = {}
+        team_name_to_id: dict[str, UUID] = {}
+        team_id_to_parent_name: dict[UUID, str] = {}
         for team_config in tournament.config.teams:
             team_id = uuid4()
             sandbox_id = await self._sandbox.create_sandbox(  # type: ignore[attr-defined]
@@ -217,6 +222,10 @@ class TournamentOrchestrator:
             )
 
             tournament.team_ids.append(team_id)
+            team_id_to_name[team_id] = team_config.name
+            team_name_to_id[team_config.name] = team_id
+            if team_config.parent_team_name:
+                team_id_to_parent_name[team_id] = team_config.parent_team_name
 
             # Persist team
             async with get_session() as session:
@@ -240,6 +249,34 @@ class TournamentOrchestrator:
                     "agent_count": len(agent_ids),
                 },
             )
+
+        hierarchy = self._resolve_team_hierarchy(
+            team_name_to_id=team_name_to_id,
+            team_id_to_name=team_id_to_name,
+            team_id_to_parent_name=team_id_to_parent_name,
+        )
+        if hierarchy:
+            self._team_hierarchy[tournament_id] = hierarchy
+            for parent_id, children in hierarchy.items():
+                for child_id in children:
+                    await self._events.publish(
+                        "tournament.team.hierarchy.linked",
+                        source="core.orchestrator",
+                        tournament_id=tournament_id,
+                        team_id=child_id,
+                        payload={
+                            "parent_team_id": str(parent_id),
+                            "child_team_id": str(child_id),
+                        },
+                    )
+            setter = getattr(self._agents, "set_team_hierarchy", None)
+            if callable(setter):
+                maybe_result = setter(
+                    tournament_id=tournament_id,
+                    hierarchy=hierarchy,
+                )
+                if asyncio.iscoroutine(maybe_result):
+                    await maybe_result
 
         # 3. Deliver challenge to sandboxes
         await self._deliver_challenge(tournament)
@@ -489,6 +526,7 @@ class TournamentOrchestrator:
         # Cancel health monitor
         if tournament.id in self._health_tasks:
             self._health_tasks[tournament.id].cancel()
+        self._team_hierarchy.pop(tournament.id, None)
 
         await self._events.publish(
             "tournament.completed",
@@ -588,6 +626,7 @@ class TournamentOrchestrator:
                 await self._sandbox.destroy_sandbox(str(team_id))  # type: ignore[attr-defined]
             except Exception:
                 logger.warning("Failed to destroy sandbox for team %s", team_id)
+        self._team_hierarchy.pop(tournament_id, None)
 
         tournament.current_phase = TournamentPhase.CANCELLED
         tournament.completed_at = datetime.utcnow()
@@ -956,6 +995,35 @@ class TournamentOrchestrator:
         except ValueError as e:
             msg = f"Challenge {challenge_id!r} spec out of sync with CHALLENGE.md: {e}"
             raise ValueError(msg) from e
+
+    def _validate_team_names(self, config: TournamentConfig) -> None:
+        names = [team.name for team in config.teams]
+        if len(names) != len(set(names)):
+            msg = "Team names must be unique for hierarchy routing"
+            raise ValueError(msg)
+
+    def _resolve_team_hierarchy(
+        self,
+        *,
+        team_name_to_id: dict[str, UUID],
+        team_id_to_name: dict[UUID, str],
+        team_id_to_parent_name: dict[UUID, str],
+    ) -> dict[UUID, list[UUID]]:
+        hierarchy: dict[UUID, list[UUID]] = {}
+        for child_id, parent_name in team_id_to_parent_name.items():
+            parent_id = team_name_to_id.get(parent_name)
+            if parent_id is None:
+                msg = f"Unknown parent_team_name {parent_name!r}"
+                raise ValueError(msg)
+            if parent_id == child_id:
+                child_name = team_id_to_name[child_id]
+                msg = f"Team {child_name!r} cannot parent itself"
+                raise ValueError(msg)
+            hierarchy.setdefault(parent_id, []).append(child_id)
+        return hierarchy
+
+    def get_team_hierarchy(self, tournament_id: UUID) -> dict[UUID, list[UUID]]:
+        return self._team_hierarchy.get(tournament_id, {})
 
     def _calculate_rounds(self, format: TournamentFormat, team_count: int) -> int:
         """Calculate total rounds for a tournament format."""

@@ -248,3 +248,22 @@ class TestAgentTeamManagerRedis:
                 config=MagicMock(),
                 sandbox_id="sandbox-1",
             )
+
+    @pytest.mark.asyncio
+    async def test_set_hierarchy_and_rollup_health(self) -> None:
+        manager = AgentTeamManager(
+            event_bus=MagicMock(),
+            redis=MagicMock(),
+        )
+        tournament_id = uuid4()
+        parent = uuid4()
+        child = uuid4()
+        manager._teams[child] = []  # no processes -> unhealthy team-not-found style payload
+        await manager.set_team_hierarchy(
+            tournament_id=tournament_id,
+            hierarchy={parent: [child]},
+        )
+
+        summary = await manager.get_hierarchy_health(tournament_id)
+        assert str(parent) in summary
+        assert summary[str(parent)]["children"] == [str(child)]

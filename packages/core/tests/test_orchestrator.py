@@ -578,6 +578,24 @@ async def test_create_tournament_budget_exceeds_max_raises(
 
 
 @pytest.mark.asyncio
+async def test_create_tournament_rejects_duplicate_team_names(
+    orchestrator: TournamentOrchestrator,
+) -> None:
+    settings = MagicMock()
+    settings.llm.budget_per_tournament_usd = 500.0
+    teams = [_team_cfg("alpha"), _team_cfg("alpha")]
+    cfg = _duel_config(teams=teams)
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        pytest.raises(ValueError, match="unique"),
+    ):
+        await orchestrator.create_tournament(cfg)
+
+
+@pytest.mark.asyncio
 async def test_create_tournament_persists_and_publishes(
     orchestrator: TournamentOrchestrator,
     mock_session_factory: object,
@@ -599,6 +617,53 @@ async def test_create_tournament_persists_and_publishes(
     assert t.challenge_id == "url-shortener-saas"
     assert t.id in orchestrator._active_tournaments
     orchestrator._events.publish.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_tournament_resolves_parent_team_name_hierarchy(
+    orchestrator: TournamentOrchestrator,
+    mock_session_factory: object,
+) -> None:
+    settings = MagicMock()
+    settings.llm.budget_per_tournament_usd = 500.0
+    alpha = _team_cfg("alpha")
+    beta = _team_cfg("beta")
+    beta = beta.model_copy(update={"parent_team_name": "alpha"})
+    cfg = _duel_config(teams=[alpha, beta])
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+    ):
+        t = await orchestrator.create_tournament(cfg)
+
+    async def _noop_health(_t: object) -> None:
+        return None
+
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+        patch.object(orchestrator, "_deliver_challenge", new_callable=AsyncMock),
+        patch.object(orchestrator, "_transition_phase", new_callable=AsyncMock),
+        patch.object(orchestrator, "_health_monitor", _noop_health),
+    ):
+        await orchestrator.start_tournament(t.id)
+
+    hierarchy = orchestrator.get_team_hierarchy(t.id)
+    assert len(hierarchy) == 1
+    linked_events = [
+        call
+        for call in orchestrator._events.publish.await_args_list
+        if (call.args and call.args[0] == "tournament.team.hierarchy.linked")
+    ]
+    assert linked_events
 
 
 @pytest.mark.asyncio

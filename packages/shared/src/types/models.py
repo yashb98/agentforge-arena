@@ -133,6 +133,10 @@ class TeamConfig(BaseModel):
         default=None,
         description="When set, this team reports to a parent team in the same tournament",
     )
+    parent_team_name: str | None = Field(
+        default=None,
+        description="Optional parent team name for hierarchy resolution at tournament start",
+    )
 
 
 class TournamentConfig(BaseModel):

@@ -242,6 +242,7 @@ class AgentTeamManager:
         self._memory_manager = memory_manager
         self._teams: dict[UUID, list[AgentProcess]] = {}
         self._mailboxes: dict[UUID, RedisMailbox] = {}
+        self._hierarchy_by_tournament: dict[UUID, dict[UUID, list[UUID]]] = {}
 
     async def spawn_team(
         self,
@@ -351,3 +352,26 @@ class AgentTeamManager:
         team_ids = list(self._teams.keys())
         for team_id in team_ids:
             await self.teardown_team(team_id)
+
+    async def set_team_hierarchy(
+        self,
+        *,
+        tournament_id: UUID,
+        hierarchy: dict[UUID, list[UUID]],
+    ) -> None:
+        """Register parent->children team mapping for coordination queries."""
+        self._hierarchy_by_tournament[tournament_id] = hierarchy
+
+    async def get_hierarchy_health(self, tournament_id: UUID) -> dict[str, dict]:
+        """Aggregate health view by parent team for hierarchical setups."""
+        hierarchy = self._hierarchy_by_tournament.get(tournament_id, {})
+        out: dict[str, dict] = {}
+        for parent_id, children in hierarchy.items():
+            child_health = []
+            for child_id in children:
+                child_health.append(await self.check_team_health(child_id))
+            out[str(parent_id)] = {
+                "children": [str(child_id) for child_id in children],
+                "child_health": child_health,
+            }
+        return out
