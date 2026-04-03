@@ -10,16 +10,20 @@ This is the most critical module in the system. Every tournament flows through h
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from packages.shared.src.challenge_library import load_validated_library_challenge
 from packages.shared.src.config import get_settings
 from packages.shared.src.db.base import get_session
-from packages.shared.src.db.models import TournamentDB, TeamDB
+from packages.shared.src.db.models import TeamDB, TournamentDB
 from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
     Tournament,
@@ -134,6 +138,8 @@ class TournamentOrchestrator:
 
         # Determine challenge
         challenge_id = config.challenge_id or await self._select_random_challenge()
+
+        self._validate_challenge_library_entry(challenge_id)
 
         # Calculate rounds
         total_rounds = self._calculate_rounds(config.format, len(config.teams))
@@ -415,16 +421,31 @@ class TournamentOrchestrator:
     # ========================================================
 
     async def _deliver_challenge(self, tournament: Tournament) -> None:
-        """Copy challenge brief into each team's sandbox."""
-        # Load challenge from DB/library
-        challenge_brief = await self._load_challenge(tournament.challenge_id)
+        """Copy challenge brief and spec into each team's sandbox."""
+        repo_root = Path(__file__).resolve().parents[4]
+        spec_json: str | None = None
+        try:
+            md, spec = load_validated_library_challenge(repo_root, tournament.challenge_id)
+            spec_json = json.dumps(spec.model_dump(mode="json"), indent=2)
+        except (FileNotFoundError, ValidationError, ValueError, OSError):
+            logger.exception(
+                "Validated challenge bundle missing for %s; delivering markdown only",
+                tournament.challenge_id,
+            )
+            md = await self._load_challenge(tournament.challenge_id)
 
         for team_id in tournament.team_ids:
             await self._sandbox.write_file(  # type: ignore[attr-defined]
                 team_id=str(team_id),
                 path="CHALLENGE.md",
-                content=challenge_brief,
+                content=md,
             )
+            if spec_json is not None:
+                await self._sandbox.write_file(  # type: ignore[attr-defined]
+                    team_id=str(team_id),
+                    path="challenge.spec.json",
+                    content=spec_json,
+                )
 
     async def _setup_cross_review(self, tournament: Tournament) -> None:
         """Grant read-only cross-team access for the review phase."""
@@ -823,8 +844,11 @@ class TournamentOrchestrator:
             return "url-shortener-saas"
 
         challenges = [
-            d.name for d in library_dir.iterdir()
-            if d.is_dir() and (d / "CHALLENGE.md").is_file()
+            d.name
+            for d in library_dir.iterdir()
+            if d.is_dir()
+            and (d / "CHALLENGE.md").is_file()
+            and (d / "challenge.spec.json").is_file()
         ]
 
         if not challenges:
@@ -846,6 +870,21 @@ class TournamentOrchestrator:
             return f"# Challenge: {challenge_id}\n\nChallenge brief not found."
 
         return challenge_file.read_text(encoding="utf-8")
+
+    def _validate_challenge_library_entry(self, challenge_id: str) -> None:
+        """Require ``CHALLENGE.md`` + ``challenge.spec.json`` with matching metadata."""
+        repo_root = Path(__file__).resolve().parents[4]
+        try:
+            load_validated_library_challenge(repo_root, challenge_id)
+        except FileNotFoundError as e:
+            msg = f"Challenge {challenge_id!r} missing library files: {e}"
+            raise ValueError(msg) from e
+        except ValidationError as e:
+            msg = f"Invalid challenge.spec.json for {challenge_id!r}: {e}"
+            raise ValueError(msg) from e
+        except ValueError as e:
+            msg = f"Challenge {challenge_id!r} spec out of sync with CHALLENGE.md: {e}"
+            raise ValueError(msg) from e
 
     def _calculate_rounds(self, format: TournamentFormat, team_count: int) -> int:
         """Calculate total rounds for a tournament format."""

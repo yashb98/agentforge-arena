@@ -1,0 +1,102 @@
+{
+  "spec_version": "1.0",
+  "challenge_id": "url-shortener-saas",
+  "title": "URL Shortener SaaS",
+  "metadata": {
+    "category": "saas_app",
+    "difficulty": "medium",
+    "tags": ["http", "storage", "analytics"],
+    "time_limit_minutes": 90
+  },
+  "requirements": [
+    "POST endpoint accepts a long URL and returns a short URL.",
+    "GET /{short_code} redirects to the original URL with 301 status.",
+    "Track clicks per short URL (count, timestamp, referrer, country).",
+    "GET endpoint lists all URLs created by a user.",
+    "DELETE endpoint removes a short URL.",
+    "Allow custom short codes when available.",
+    "Rate limiting: max 100 URL creations per hour per user.",
+    "URLs may have optional expiration dates.",
+    "Generate QR codes for short URLs.",
+    "Bulk create multiple short URLs in one request."
+  ],
+  "orchestration": {
+    "tournament_formats_allowed": [
+      "duel",
+      "standard",
+      "league",
+      "grand_prix",
+      "marathon"
+    ],
+    "phase_hints": {
+      "research": {
+        "objectives": ["Survey URL safety, storage, and analytics patterns."]
+      },
+      "architecture": {
+        "deliverables": ["Design API surface, persistence model, and scaling notes in docs/."]
+      }
+    },
+    "milestones": []
+  },
+  "delivery": {
+    "root_readme_required": true,
+    "artifact_globs": ["README.md", "Dockerfile", "docs/**/*.md"]
+  },
+  "quality": {
+    "commands": []
+  },
+  "judge": {
+    "rubric_version": "1",
+    "criteria": [
+      {
+        "id": "functionality",
+        "weight": 0.3,
+        "description": "Hidden pytest suite and core API behavior."
+      },
+      {
+        "id": "code_quality",
+        "weight": 0.2,
+        "description": "Ruff, mypy, and structure."
+      },
+      {
+        "id": "test_coverage",
+        "weight": 0.15,
+        "description": "Line and branch coverage."
+      },
+      {
+        "id": "ux_design",
+        "weight": 0.15,
+        "description": "UX and API ergonomics."
+      },
+      {
+        "id": "architecture",
+        "weight": 0.1,
+        "description": "ARCHITECTURE.md and modularity."
+      },
+      {
+        "id": "innovation",
+        "weight": 0.1,
+        "description": "Novel approaches within constraints."
+      }
+    ],
+    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+  },
+  "agents": {
+    "global_constraints": [
+      "Use the LiteLLM proxy only; do not embed API keys.",
+      "Include a Dockerfile and README with setup instructions."
+    ],
+    "roles": {
+      "architect": { "focus": ["API design", "data model", "observability"] },
+      "builder": { "focus": ["implementation", "tests", "Docker"] },
+      "tester": { "focus": ["edge cases", "load-sensitive paths"] }
+    }
+  },
+  "hidden_test_hints": [
+    "Judge tests URL creation at 1000+ URLs.",
+    "Redirect latency target p99 under 50ms.",
+    "Concurrent redirects (100 simultaneous).",
+    "Custom slug collision handling.",
+    "URL expiration and invalid URL rejection."
+  ]
+}

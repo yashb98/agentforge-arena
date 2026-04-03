@@ -1,9 +1,9 @@
 """
 AgentForge Arena — Challenge Routes
 
-Endpoints for browsing the challenge library. Challenges are loaded from
-the filesystem at ``challenges/library/<id>/CHALLENGE.md``. Results are
-cached in memory after first load to avoid repeated disk I/O.
+Endpoints for browsing the challenge library. Challenges load from
+``challenges/library/<id>/CHALLENGE.md`` plus optional ``challenge.spec.json``.
+Results are cached in memory after first load.
 """
 
 from __future__ import annotations
@@ -13,7 +13,12 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import ValidationError
 
+from packages.shared.src.challenge_library import (
+    load_challenge_spec_file,
+    validate_spec_matches_markdown,
+)
 from packages.shared.src.types.models import ChallengeCategory, ChallengeDifficulty
 from packages.shared.src.types.responses import ChallengeListResponse, ChallengeResponse
 
@@ -153,6 +158,48 @@ def _parse_challenge_md(challenge_id: str, content: str) -> ChallengeResponse:
         time_limit_minutes=time_limit_minutes,
         requirements=requirements,
         tags=tags,
+        spec=None,
+    )
+
+
+def _merge_spec_into_response(
+    challenge_id: str,
+    markdown: str,
+    legacy: ChallengeResponse,
+) -> ChallengeResponse:
+    """If ``challenge.spec.json`` exists, validate and merge structured fields."""
+    spec_path = _LIBRARY_DIR / challenge_id / "challenge.spec.json"
+    if not spec_path.is_file():
+        logger.warning(
+            "Challenge %s has no challenge.spec.json — serving markdown-only (legacy)",
+            challenge_id,
+        )
+        return legacy
+
+    try:
+        spec = load_challenge_spec_file(spec_path)
+        validate_spec_matches_markdown(spec, markdown, challenge_id)
+    except ValidationError:
+        logger.exception("Invalid challenge.spec.json for %s — skipping challenge", challenge_id)
+        raise
+    except ValueError:
+        logger.exception("Spec/markdown mismatch for %s — skipping challenge", challenge_id)
+        raise
+
+    tags = list(spec.metadata.tags)
+    if not tags:
+        tags = [spec.metadata.category.value, spec.metadata.difficulty.value]
+
+    return ChallengeResponse(
+        id=challenge_id,
+        title=spec.title,
+        description=legacy.description,
+        category=spec.metadata.category,
+        difficulty=spec.metadata.difficulty,
+        time_limit_minutes=spec.metadata.time_limit_minutes,
+        requirements=spec.requirements,
+        tags=tags,
+        spec=spec,
     )
 
 
@@ -160,8 +207,8 @@ def _load_challenges() -> dict[str, ChallengeResponse]:
     """Load all challenges from disk and return them keyed by challenge ID.
 
     Each subdirectory of ``challenges/library/`` is treated as a challenge.
-    The directory name becomes the challenge ID. The ``CHALLENGE.md`` inside
-    is parsed for metadata.
+    The directory name becomes the challenge ID. ``CHALLENGE.md`` is required;
+    ``challenge.spec.json`` is merged when present and valid.
     """
     challenges: dict[str, ChallengeResponse] = {}
 
@@ -182,7 +229,11 @@ def _load_challenges() -> dict[str, ChallengeResponse]:
 
         try:
             content = challenge_file.read_text(encoding="utf-8")
-            challenges[challenge_id] = _parse_challenge_md(challenge_id, content)
+            legacy = _parse_challenge_md(challenge_id, content)
+            merged = _merge_spec_into_response(challenge_id, content, legacy)
+            challenges[challenge_id] = merged
+        except (ValidationError, ValueError):
+            logger.exception("Failed to load challenge %s", challenge_id)
         except Exception:
             logger.exception("Failed to parse challenge %s", challenge_id)
 

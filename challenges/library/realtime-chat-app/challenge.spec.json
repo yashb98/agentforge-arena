@@ -1,0 +1,100 @@
+{
+  "spec_version": "1.0",
+  "challenge_id": "realtime-chat-app",
+  "title": "Real-Time Chat Application",
+  "metadata": {
+    "category": "real_time",
+    "difficulty": "hard",
+    "tags": ["websocket", "chat", "presence"],
+    "time_limit_minutes": 120
+  },
+  "requirements": [
+    "WebSocket connection at /ws with username.",
+    "REST API to create, join, and leave named rooms.",
+    "Send messages to rooms; members receive in real time.",
+    "GET endpoint returns paginated message history.",
+    "Show which users are online in each room.",
+    "Typing indicators broadcast start/stop.",
+    "Search messages by keyword within a room.",
+    "List active rooms with member counts.",
+    "Direct messages between two users."
+  ],
+  "orchestration": {
+    "tournament_formats_allowed": [
+      "duel",
+      "standard",
+      "league",
+      "grand_prix",
+      "marathon"
+    ],
+    "phase_hints": {
+      "research": {
+        "objectives": ["Review WebSocket scaling, presence, and persistence tradeoffs."]
+      },
+      "architecture": {
+        "deliverables": ["ARCHITECTURE.md for rooms, connections, and storage."]
+      }
+    },
+    "milestones": []
+  },
+  "delivery": {
+    "root_readme_required": true,
+    "artifact_globs": ["README.md", "ARCHITECTURE.md", "Dockerfile"]
+  },
+  "quality": {
+    "commands": []
+  },
+  "judge": {
+    "rubric_version": "1",
+    "criteria": [
+      {
+        "id": "functionality",
+        "weight": 0.35,
+        "description": "WebSocket, rooms, persistence, presence."
+      },
+      {
+        "id": "code_quality",
+        "weight": 0.15,
+        "description": "Ruff, mypy, structure."
+      },
+      {
+        "id": "test_coverage",
+        "weight": 0.15,
+        "description": "Coverage of realtime paths."
+      },
+      {
+        "id": "ux_design",
+        "weight": 0.1,
+        "description": "API and protocol ergonomics."
+      },
+      {
+        "id": "architecture",
+        "weight": 0.15,
+        "description": "ARCHITECTURE.md and boundaries."
+      },
+      {
+        "id": "innovation",
+        "weight": 0.1,
+        "description": "Polish beyond baseline requirements."
+      }
+    ],
+    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+  },
+  "agents": {
+    "global_constraints": [
+      "Tests expect the app on port 8000 unless overridden in team config.",
+      "Include Dockerfile, README, and ARCHITECTURE.md."
+    ],
+    "roles": {
+      "architect": { "focus": ["WebSocket design", "room model", "presence"] },
+      "builder": { "focus": ["implementation", "tests", "realtime edge cases"] }
+    }
+  },
+  "hidden_test_hints": [
+    "Multiple simultaneous WebSocket clients.",
+    "Message ordering and delivery guarantees.",
+    "Room isolation (no cross-room leaks).",
+    "Persistence across reconnect.",
+    "Presence accuracy on connect/disconnect."
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "spec_version": "1.0",
+  "challenge_id": "task-queue-engine",
+  "title": "Distributed Task Queue Engine",
+  "metadata": {
+    "category": "api_service",
+    "difficulty": "hard",
+    "tags": ["queue", "workers", "retries"],
+    "time_limit_minutes": 120
+  },
+  "requirements": [
+    "POST endpoint enqueues a task with JSON payload and optional priority.",
+    "GET endpoint returns task status (pending/running/completed/failed).",
+    "GET endpoint retrieves completed task result.",
+    "Workers register via POST and poll for tasks.",
+    "Failed tasks retry up to 3 times with exponential backoff.",
+    "Higher-priority tasks dequeue before lower priority.",
+    "Exhausted retries move tasks to a listable dead letter queue.",
+    "Cancel pending tasks before pickup.",
+    "Worker heartbeats; stuck tasks re-queued after timeout.",
+    "Batch submit multiple tasks in one request."
+  ],
+  "orchestration": {
+    "tournament_formats_allowed": [
+      "duel",
+      "standard",
+      "league",
+      "grand_prix",
+      "marathon"
+    ],
+    "phase_hints": {
+      "research": {
+        "objectives": ["Compare queue semantics, durability, and worker coordination patterns."]
+      },
+      "architecture": {
+        "deliverables": ["ARCHITECTURE.md covering queue, workers, and failure domains."]
+      }
+    },
+    "milestones": []
+  },
+  "delivery": {
+    "root_readme_required": true,
+    "artifact_globs": ["README.md", "ARCHITECTURE.md", "Dockerfile"]
+  },
+  "quality": {
+    "commands": []
+  },
+  "judge": {
+    "rubric_version": "1",
+    "criteria": [
+      {
+        "id": "functionality",
+        "weight": 0.35,
+        "description": "Hidden tests for enqueue, worker, retry, DLQ, priority."
+      },
+      {
+        "id": "code_quality",
+        "weight": 0.2,
+        "description": "Ruff, mypy, and clarity."
+      },
+      {
+        "id": "test_coverage",
+        "weight": 0.15,
+        "description": "Coverage of core paths."
+      },
+      {
+        "id": "ux_design",
+        "weight": 0.05,
+        "description": "API ergonomics."
+      },
+      {
+        "id": "architecture",
+        "weight": 0.15,
+        "description": "ARCHITECTURE.md and structure."
+      },
+      {
+        "id": "innovation",
+        "weight": 0.1,
+        "description": "Creative extensions within constraints."
+      }
+    ],
+    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+  },
+  "agents": {
+    "global_constraints": [
+      "Tests expect the app on port 8000 unless overridden in team config.",
+      "Include Dockerfile, README, and ARCHITECTURE.md."
+    ],
+    "roles": {
+      "architect": { "focus": ["queue model", "worker protocol", "failure handling"] },
+      "builder": { "focus": ["HTTP API", "persistence", "concurrency"] }
+    }
+  },
+  "hidden_test_hints": [
+    "Tests submit tasks and poll for completion.",
+    "Priority ordering verified with mixed-priority batches.",
+    "Retry and DLQ behavior under intentional failures.",
+    "Mock workers and task assignment.",
+    "Status transitions pending to running to completed or failed."
+  ]
+}

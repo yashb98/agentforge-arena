@@ -12,6 +12,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from packages.shared.src.types.challenge_spec import ChallengeSpecDocument
 from packages.shared.src.types.models import (
     AgentRole,
     AgentStatus,
@@ -92,6 +93,10 @@ class ChallengeResponse(BaseModel):
     time_limit_minutes: int = Field(description="Time budget in minutes for each tournament phase")
     requirements: list[str] = Field(description="Functional requirements teams must satisfy")
     tags: list[str] = Field(default_factory=list, description="Searchable tags for filtering challenges")
+    spec: ChallengeSpecDocument | None = Field(
+        default=None,
+        description="Validated challenge.spec.json when present in the library; null for legacy entries.",
+    )
 
 
 class ChallengeListResponse(BaseModel):

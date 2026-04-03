@@ -38,6 +38,9 @@ def test_get_challenge_by_id(client: TestClient) -> None:
     data = r.json()
     assert data["id"] == "url-shortener-saas"
     assert data["title"]
+    assert data["spec"] is not None
+    assert data["spec"]["spec_version"] == "1.0"
+    assert data["spec"]["judge"]["rubric_version"] == "1"
 
 
 def test_get_challenge_404(client: TestClient) -> None:

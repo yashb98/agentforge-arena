@@ -113,6 +113,12 @@ class ChallengeDB(Base):
     scoring_weights: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     times_used: Mapped[int] = mapped_column(Integer, default=0)
+    # Snapshot of challenge.spec.json at import/publish time (reproducible runs)
+    spec_snapshot: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
 
 
 class MatchResultDB(Base):

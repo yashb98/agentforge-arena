@@ -62,6 +62,9 @@ class TestChallengeLibraryStructure:
         challenge_dir = CHALLENGE_LIBRARY / slug
         assert challenge_dir.is_dir(), f"Challenge directory missing: {slug}"
         assert (challenge_dir / "CHALLENGE.md").is_file(), f"CHALLENGE.md missing for {slug}"
+        assert (challenge_dir / "challenge.spec.json").is_file(), (
+            f"challenge.spec.json missing for {slug}"
+        )
         assert (challenge_dir / "hidden_tests").is_dir(), f"hidden_tests/ missing for {slug}"
         assert (challenge_dir / "scoring_config.json").is_file(), f"scoring_config.json missing for {slug}"
 

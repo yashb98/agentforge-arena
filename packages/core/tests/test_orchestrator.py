@@ -432,6 +432,49 @@ async def test_phase_timer_zero_remaining_triggers_transition(
 
 
 @pytest.mark.asyncio
+async def test_create_tournament_rejects_unknown_challenge(
+    orchestrator: TournamentOrchestrator,
+    mock_session_factory: object,
+) -> None:
+    settings = MagicMock()
+    settings.llm.budget_per_tournament_usd = 500.0
+    cfg = _duel_config(challenge_id="totally-unknown-challenge-slug-999")
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+        pytest.raises(ValueError, match="missing library files"),
+    ):
+        await orchestrator.create_tournament(cfg)
+
+
+@pytest.mark.asyncio
+async def test_deliver_challenge_writes_markdown_and_spec(
+    orchestrator: TournamentOrchestrator,
+) -> None:
+    team_id = uuid4()
+    cfg = _duel_config()
+    tournament = Tournament(
+        id=uuid4(),
+        format=TournamentFormat.DUEL,
+        challenge_id="url-shortener-saas",
+        config=cfg,
+        team_ids=[team_id],
+    )
+    await orchestrator._deliver_challenge(tournament)
+    wf = orchestrator._sandbox.write_file
+    assert wf.await_count == 2
+    paths = [c.kwargs["path"] for c in wf.await_args_list]
+    assert "CHALLENGE.md" in paths
+    assert "challenge.spec.json" in paths
+
+
+@pytest.mark.asyncio
 async def test_create_tournament_budget_exceeds_max_raises(
     orchestrator: TournamentOrchestrator,
 ) -> None:
