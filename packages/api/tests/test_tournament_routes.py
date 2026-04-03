@@ -630,3 +630,91 @@ class TestCancelTournament:
         response = client.post(f"/api/v1/tournaments/{t.id}/cancel")
 
         assert response.status_code == 200
+
+
+# ============================================================
+# POST checkpoint / hydrate / advance-milestone
+# ============================================================
+
+
+class TestDurabilityAndMarathonRoutes:
+    """Checkpoint (P0), hydrate, and marathon milestone endpoints."""
+
+    def test_checkpoint_returns_200(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        t = _make_tournament()
+        mock_orchestrator._active_tournaments = {t.id: t}
+        mock_orchestrator.checkpoint_tournament = AsyncMock(return_value=t)
+
+        response = client.post(f"/api/v1/tournaments/{t.id}/checkpoint")
+
+        assert response.status_code == 200
+        mock_orchestrator.checkpoint_tournament.assert_awaited_once_with(t.id)
+
+    def test_hydrate_returns_200(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        t = _make_tournament()
+        mock_orchestrator.hydrate_tournament_from_db = AsyncMock(return_value=t)
+
+        response = client.post(f"/api/v1/tournaments/{t.id}/hydrate")
+
+        assert response.status_code == 200
+        mock_orchestrator.hydrate_tournament_from_db.assert_awaited_once_with(t.id)
+
+    def test_advance_milestone_400_on_value_error(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        mock_orchestrator.advance_milestone = AsyncMock(
+            side_effect=ValueError("marathon format only")
+        )
+
+        response = client.post(
+            f"/api/v1/tournaments/{uuid4()}/advance-milestone",
+        )
+
+        assert response.status_code == 400
+
+    def test_checkpoint_500_on_unexpected_error(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        t = _make_tournament()
+        mock_orchestrator._active_tournaments = {t.id: t}
+        mock_orchestrator.checkpoint_tournament = AsyncMock(side_effect=RuntimeError("db"))
+
+        response = client.post(f"/api/v1/tournaments/{t.id}/checkpoint")
+
+        assert response.status_code == 500
+
+    def test_hydrate_500_on_unexpected_error(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        mock_orchestrator.hydrate_tournament_from_db = AsyncMock(
+            side_effect=RuntimeError("db")
+        )
+
+        response = client.post(f"/api/v1/tournaments/{uuid4()}/hydrate")
+
+        assert response.status_code == 500
+
+    def test_advance_milestone_500_on_unexpected_error(
+        self,
+        client: TestClient,
+        mock_orchestrator: MagicMock,
+    ) -> None:
+        mock_orchestrator.advance_milestone = AsyncMock(side_effect=RuntimeError("db"))
+
+        response = client.post(f"/api/v1/tournaments/{uuid4()}/advance-milestone")
+
+        assert response.status_code == 500

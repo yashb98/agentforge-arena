@@ -5,11 +5,14 @@ CRUD and lifecycle endpoints for tournaments.  All business logic is
 delegated to the TournamentOrchestrator injected via Depends().
 
 Routes:
-    POST   /tournaments                → create a new tournament (201)
-    GET    /tournaments                → paginated list of tournaments (200)
-    GET    /tournaments/{id}           → single tournament detail (200 | 404)
-    POST   /tournaments/{id}/start     → transition to RESEARCH phase (200 | 400)
-    POST   /tournaments/{id}/cancel    → cancel an active tournament (200 | 404)
+    POST   /tournaments                      → create a new tournament (201)
+    GET    /tournaments                      → paginated list of tournaments (200)
+    GET    /tournaments/{id}                 → single tournament detail (200 | 404)
+    POST   /tournaments/{id}/start            → transition to RESEARCH phase (200 | 400)
+    POST   /tournaments/{id}/cancel           → cancel an active tournament (200 | 404)
+    POST   /tournaments/{id}/checkpoint       → persist scalars + runtime_state (200 | 404 | 500)
+    POST   /tournaments/{id}/hydrate         → load from DB into orchestrator (200 | 404 | 500)
+    POST   /tournaments/{id}/advance-milestone → next phase for MARATHON (200 | 400 | 500)
 """
 
 from __future__ import annotations
@@ -320,4 +323,67 @@ async def cancel_tournament(
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
     logger.info("Tournament cancelled: %s", tournament_id)
+    return _tournament_to_response(tournament)
+
+
+@router.post(
+    "/{tournament_id}/checkpoint",
+    response_model=TournamentResponse,
+    summary="Checkpoint tournament state",
+    response_description="Tournament after persisting scalars to the database.",
+)
+async def checkpoint_tournament(
+    tournament_id: UUID,
+    orchestrator: object = Depends(get_orchestrator),
+) -> TournamentResponse:
+    """Explicitly flush tournament fields to PostgreSQL (multi-day durability)."""
+    try:
+        tournament: Tournament = await orchestrator.checkpoint_tournament(tournament_id)  # type: ignore[union-attr]
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Checkpoint failed for %s", tournament_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+    return _tournament_to_response(tournament)
+
+
+@router.post(
+    "/{tournament_id}/advance-milestone",
+    response_model=TournamentResponse,
+    summary="Advance marathon milestone",
+    response_description="Tournament after moving to the next phase (marathon only).",
+)
+async def advance_milestone(
+    tournament_id: UUID,
+    orchestrator: object = Depends(get_orchestrator),
+) -> TournamentResponse:
+    """Advance one phase for MARATHON format (no wall-clock timers)."""
+    try:
+        tournament = await orchestrator.advance_milestone(tournament_id)  # type: ignore[union-attr]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("advance_milestone failed for %s", tournament_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+    return _tournament_to_response(tournament)
+
+
+@router.post(
+    "/{tournament_id}/hydrate",
+    response_model=TournamentResponse,
+    summary="Hydrate tournament from database",
+    response_description="Tournament loaded into orchestrator memory.",
+)
+async def hydrate_tournament(
+    tournament_id: UUID,
+    orchestrator: object = Depends(get_orchestrator),
+) -> TournamentResponse:
+    """Load tournament from DB if missing from in-memory registry (recovery)."""
+    try:
+        tournament = await orchestrator.hydrate_tournament_from_db(tournament_id)  # type: ignore[union-attr]
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("hydrate failed for %s", tournament_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
     return _tournament_to_response(tournament)

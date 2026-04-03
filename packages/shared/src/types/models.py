@@ -24,6 +24,8 @@ class TournamentFormat(str, Enum):
     STANDARD = "standard"
     LEAGUE = "league"
     GRAND_PRIX = "grand_prix"
+    # Milestone-driven: no auto phase timers; advance via API only
+    MARATHON = "marathon"
 
 
 class TournamentPhase(str, Enum):
@@ -126,6 +128,11 @@ class TeamConfig(BaseModel):
     strategy: dict[str, object] = Field(default_factory=dict)
     sandbox_memory: str = "4g"
     sandbox_cpus: int = Field(default=2, ge=1, le=8)
+    # Hierarchical teams (P1): optional parent for sub-team / pod coordination
+    parent_team_id: UUID | None = Field(
+        default=None,
+        description="When set, this team reports to a parent team in the same tournament",
+    )
 
 
 class TournamentConfig(BaseModel):

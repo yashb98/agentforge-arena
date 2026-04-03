@@ -16,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,6 +41,12 @@ class TournamentDB(Base):
         PG_UUID(as_uuid=True), nullable=True
     )
     total_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    # Phase timer + resume metadata (deadline UTC ISO, phase key, costs snapshot)
+    runtime_state: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
 
     # Relationships
     teams: Mapped[list[TeamDB]] = relationship(back_populates="tournament", lazy="selectin")

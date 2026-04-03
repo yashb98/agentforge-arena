@@ -106,6 +106,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     logger.info("Tournament orchestrator initialized")
 
+    try:
+        await app.state.orchestrator.restore_durable_tournaments()
+        logger.info("Durable tournaments restored from database (if any)")
+    except Exception:
+        logger.exception(
+            "restore_durable_tournaments failed — continuing startup without DB restore"
+        )
+
     yield
 
     # Shutdown

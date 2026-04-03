@@ -14,12 +14,14 @@ import logging
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
+from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
+
 from packages.shared.src.config import get_settings
 from packages.shared.src.db.base import get_session
 from packages.shared.src.db.models import TournamentDB, TeamDB
 from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
-    ArenaEvent,
     Tournament,
     TournamentConfig,
     TournamentFormat,
@@ -67,6 +69,16 @@ DEFAULT_PHASE_TIMINGS: dict[TournamentFormat, dict[TournamentPhase, int]] = {
         TournamentPhase.FIX: 600,
         TournamentPhase.JUDGE: 900,
     },
+    # Reference timings only — MARATHON never auto-schedules these timers
+    TournamentFormat.MARATHON: {
+        TournamentPhase.PREP: 86400,
+        TournamentPhase.RESEARCH: 86400 * 3,
+        TournamentPhase.ARCHITECTURE: 86400,
+        TournamentPhase.BUILD: 86400 * 7,
+        TournamentPhase.CROSS_REVIEW: 86400,
+        TournamentPhase.FIX: 86400,
+        TournamentPhase.JUDGE: 86400,
+    },
 }
 
 # Valid phase transitions
@@ -79,6 +91,11 @@ PHASE_TRANSITIONS: dict[TournamentPhase, TournamentPhase] = {
     TournamentPhase.FIX: TournamentPhase.JUDGE,
     TournamentPhase.JUDGE: TournamentPhase.COMPLETE,
 }
+
+
+def _uses_auto_phase_timers(fmt: TournamentFormat) -> bool:
+    """Marathon format uses milestone API instead of wall-clock phase timers."""
+    return fmt != TournamentFormat.MARATHON
 
 
 class TournamentOrchestrator:
@@ -274,7 +291,7 @@ class TournamentOrchestrator:
             },
         )
 
-        # Set timer for next transition
+        # Set timer for next transition (skipped for MARATHON — milestones only)
         if next_phase not in (TournamentPhase.COMPLETE, TournamentPhase.CANCELLED):
             timings = (
                 tournament.config.phase_timings
@@ -285,10 +302,19 @@ class TournamentOrchestrator:
             # Cancel existing timer
             if tournament.id in self._phase_timers:
                 self._phase_timers[tournament.id].cancel()
+                del self._phase_timers[tournament.id]
 
-            self._phase_timers[tournament.id] = asyncio.create_task(
-                self._phase_timer(tournament, next_phase, duration)
-            )
+            if _uses_auto_phase_timers(tournament.format):
+                await self._persist_runtime_checkpoint(
+                    tournament, timer_phase=next_phase, duration_seconds=duration
+                )
+                self._phase_timers[tournament.id] = asyncio.create_task(
+                    self._phase_timer(tournament, next_phase, duration)
+                )
+            else:
+                await self._persist_runtime_checkpoint(
+                    tournament, timer_phase=None, duration_seconds=0
+                )
 
         logger.info("Tournament %s: %s → %s", tournament.id, previous.value, next_phase.value)
 
@@ -296,13 +322,33 @@ class TournamentOrchestrator:
         await self._execute_phase_setup(tournament, next_phase)
 
     async def _phase_timer(
-        self, tournament: Tournament, phase: TournamentPhase, duration_seconds: int
+        self,
+        tournament: Tournament,
+        phase: TournamentPhase,
+        duration_seconds: int,
+        *,
+        resume_remaining_seconds: int | None = None,
     ) -> None:
-        """Timer that enforces phase deadlines."""
+        """Timer that enforces phase deadlines.
+
+        When ``resume_remaining_seconds`` is set (after process restart), sleeps are
+        based on remaining wall time instead of the full configured duration.
+        """
         try:
-            # Send 60-second warning
-            if duration_seconds > 60:
-                await asyncio.sleep(duration_seconds - 60)
+            budget = (
+                resume_remaining_seconds
+                if resume_remaining_seconds is not None
+                else duration_seconds
+            )
+            if budget <= 0:
+                next_phase = PHASE_TRANSITIONS.get(phase)
+                if next_phase and tournament.current_phase == phase:
+                    await self._transition_phase(tournament, next_phase)
+                return
+
+            # Send 60-second warning when enough time remains
+            if budget > 60:
+                await asyncio.sleep(budget - 60)
                 await self._events.publish(
                     "tournament.phase.ending",
                     source="core.orchestrator",
@@ -311,9 +357,8 @@ class TournamentOrchestrator:
                 )
                 await asyncio.sleep(60)
             else:
-                await asyncio.sleep(duration_seconds)
+                await asyncio.sleep(budget)
 
-            # Force transition
             next_phase = PHASE_TRANSITIONS.get(phase)
             if next_phase and tournament.current_phase == phase:
                 logger.info("Phase %s timed out for tournament %s", phase.value, tournament.id)
@@ -408,6 +453,7 @@ class TournamentOrchestrator:
     async def _complete_tournament(self, tournament: Tournament) -> None:
         """Finalize tournament, update ELO, cleanup sandboxes."""
         tournament.completed_at = datetime.utcnow()
+        await self._clear_runtime_checkpoint(tournament.id)
 
         # Cleanup sandboxes
         for team_id in tournament.team_ids:
@@ -528,6 +574,7 @@ class TournamentOrchestrator:
                     current_phase=TournamentPhase.CANCELLED.value,
                     completed_at=tournament.completed_at,
                     updated_at=datetime.utcnow(),
+                    runtime_state={},
                 )
             )
 
@@ -542,6 +589,209 @@ class TournamentOrchestrator:
         )
 
         logger.info("Tournament %s cancelled", tournament_id)
+        return tournament
+
+    # ========================================================
+    # Durability (P0 checkpoint / resume) & marathon milestones (P1)
+    # ========================================================
+
+    async def _persist_runtime_checkpoint(
+        self,
+        tournament: Tournament,
+        *,
+        timer_phase: TournamentPhase | None,
+        duration_seconds: int,
+    ) -> None:
+        """Write ``runtime_state`` JSONB for crash recovery and timer restore."""
+        payload: dict = {
+            "total_cost_usd": tournament.total_cost_usd,
+            "team_ids": [str(x) for x in tournament.team_ids],
+            "checkpoint_version": 1,
+        }
+        if (
+            timer_phase
+            and duration_seconds > 0
+            and _uses_auto_phase_timers(tournament.format)
+        ):
+            deadline = datetime.utcnow() + timedelta(seconds=duration_seconds)
+            payload["phase_timer_phase"] = timer_phase.value
+            payload["deadline_utc"] = deadline.isoformat()
+            payload["duration_seconds"] = duration_seconds
+        else:
+            payload["phase_timer_phase"] = tournament.current_phase.value
+            payload["deadline_utc"] = None
+            payload["duration_seconds"] = 0
+            payload["milestone_mode"] = not _uses_auto_phase_timers(tournament.format)
+
+        async with get_session() as session:
+            await session.execute(
+                update(TournamentDB)
+                .where(TournamentDB.id == tournament.id)
+                .values(runtime_state=payload, updated_at=datetime.utcnow())
+            )
+
+    async def _clear_runtime_checkpoint(self, tournament_id: UUID) -> None:
+        async with get_session() as session:
+            await session.execute(
+                update(TournamentDB)
+                .where(TournamentDB.id == tournament_id)
+                .values(runtime_state={}, updated_at=datetime.utcnow())
+            )
+
+    def _tournament_from_db_row(self, row: TournamentDB) -> Tournament:
+        config = TournamentConfig.model_validate(row.config, strict=False)
+        team_ids = [t.id for t in row.teams]
+        return Tournament(
+            id=row.id,
+            format=TournamentFormat(row.format),
+            current_phase=TournamentPhase(row.current_phase),
+            challenge_id=row.challenge_id,
+            config=config,
+            team_ids=team_ids,
+            current_round=row.current_round,
+            total_rounds=row.total_rounds,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            winner_team_id=row.winner_team_id,
+            total_cost_usd=row.total_cost_usd,
+        )
+
+    async def restore_durable_tournaments(self) -> None:
+        """Reload non-terminal tournaments from PostgreSQL after API restart."""
+        async with get_session() as session:
+            result = await session.execute(
+                select(TournamentDB)
+                .options(selectinload(TournamentDB.teams))
+                .where(
+                    TournamentDB.current_phase.not_in(
+                        [
+                            TournamentPhase.COMPLETE.value,
+                            TournamentPhase.CANCELLED.value,
+                        ]
+                    )
+                )
+            )
+            rows = result.scalars().unique().all()
+
+        for row in rows:
+            tournament = self._tournament_from_db_row(row)
+            self._active_tournaments[tournament.id] = tournament
+            rs = row.runtime_state or {}
+            if tournament.team_ids and tournament.current_phase != TournamentPhase.PREP:
+                self._health_tasks[tournament.id] = asyncio.create_task(
+                    self._health_monitor(tournament)
+                )
+            if not _uses_auto_phase_timers(tournament.format):
+                logger.info(
+                    "Restored tournament %s (marathon / no auto-timer)",
+                    tournament.id,
+                )
+                continue
+            deadline_raw = rs.get("deadline_utc")
+            phase_key = rs.get("phase_timer_phase")
+            duration_saved = int(rs.get("duration_seconds") or 0)
+            if not deadline_raw or not phase_key:
+                continue
+            try:
+                deadline = datetime.fromisoformat(str(deadline_raw))
+            except ValueError:
+                logger.warning("Bad deadline in runtime_state for %s", tournament.id)
+                continue
+            if phase_key != tournament.current_phase.value:
+                logger.warning(
+                    "Stale timer phase for tournament %s — skipping timer restore",
+                    tournament.id,
+                )
+                continue
+            remaining = (deadline - datetime.utcnow()).total_seconds()
+            timings = (
+                tournament.config.phase_timings
+                or DEFAULT_PHASE_TIMINGS[tournament.format]
+            )
+            full_dur = timings.get(tournament.current_phase, duration_saved or 3600)
+            if tournament.id in self._phase_timers:
+                self._phase_timers[tournament.id].cancel()
+            tp = tournament.current_phase
+            resume_sec = int(remaining) if remaining > 0 else 1
+            self._phase_timers[tournament.id] = asyncio.create_task(
+                self._phase_timer(
+                    tournament,
+                    tp,
+                    full_dur,
+                    resume_remaining_seconds=resume_sec,
+                )
+            )
+            logger.info(
+                "Restored phase timer for tournament %s (~%.0fs left)",
+                tournament.id,
+                max(0, remaining),
+            )
+
+    async def checkpoint_tournament(self, tournament_id: UUID) -> Tournament:
+        """Persist current tournament scalars; runtime_state updated on phase changes."""
+        tournament = self._active_tournaments.get(tournament_id)
+        if not tournament:
+            msg = f"Tournament {tournament_id} not found in memory"
+            raise ValueError(msg)
+        async with get_session() as session:
+            await session.execute(
+                update(TournamentDB)
+                .where(TournamentDB.id == tournament_id)
+                .values(
+                    current_phase=tournament.current_phase.value,
+                    total_cost_usd=tournament.total_cost_usd,
+                    winner_team_id=tournament.winner_team_id,
+                    started_at=tournament.started_at,
+                    completed_at=tournament.completed_at,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+        await self._events.publish(
+            "tournament.checkpointed",
+            source="core.orchestrator",
+            tournament_id=tournament_id,
+            payload={"phase": tournament.current_phase.value},
+        )
+        return tournament
+
+    async def advance_milestone(self, tournament_id: UUID) -> Tournament:
+        """MARATHON only: move to the next phase without wall-clock timers."""
+        tournament = self._active_tournaments.get(tournament_id)
+        if not tournament:
+            msg = f"Tournament {tournament_id} not found"
+            raise ValueError(msg)
+        if tournament.format != TournamentFormat.MARATHON:
+            msg = "advance_milestone is only valid for marathon format tournaments"
+            raise ValueError(msg)
+        if tournament.current_phase in (
+            TournamentPhase.COMPLETE,
+            TournamentPhase.CANCELLED,
+        ):
+            msg = f"Tournament {tournament_id} is already terminal"
+            raise ValueError(msg)
+        nxt = PHASE_TRANSITIONS.get(tournament.current_phase)
+        if not nxt:
+            msg = "No next phase from current state"
+            raise ValueError(msg)
+        await self._transition_phase(tournament, nxt)
+        return tournament
+
+    async def hydrate_tournament_from_db(self, tournament_id: UUID) -> Tournament:
+        """Load tournament from DB into memory if missing."""
+        if tournament_id in self._active_tournaments:
+            return self._active_tournaments[tournament_id]
+        async with get_session() as session:
+            result = await session.execute(
+                select(TournamentDB)
+                .options(selectinload(TournamentDB.teams))
+                .where(TournamentDB.id == tournament_id)
+            )
+            row = result.scalar_one_or_none()
+        if row is None:
+            msg = f"Tournament {tournament_id} not found in database"
+            raise ValueError(msg)
+        tournament = self._tournament_from_db_row(row)
+        self._active_tournaments[tournament_id] = tournament
         return tournament
 
     # ========================================================
@@ -613,3 +863,5 @@ class TournamentOrchestrator:
                 # Swiss system: ~log2(teams) + 1
                 import math
                 return max(3, int(math.log2(team_count)) + 1)
+            case TournamentFormat.MARATHON:
+                return 1
