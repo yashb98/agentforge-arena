@@ -114,6 +114,17 @@ class StorageSettings(BaseSettings):
     bucket_replays: str = "arena-replays"
 
 
+class MemorySettings(BaseSettings):
+    """Agent memory defaults for resilient long-running execution."""
+
+    model_config = SettingsConfigDict(env_prefix="MEMORY_")
+
+    enabled: bool = True
+    l1_key_prefix: str = "memory:l1"
+    l1_ttl_seconds: int = 6 * 60 * 60
+    l1_max_events: int = 50
+
+
 class AppSettings(BaseSettings):
     """Top-level application settings."""
 
@@ -142,6 +153,7 @@ class AppSettings(BaseSettings):
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
 
 
 @lru_cache(maxsize=1)
