@@ -15,12 +15,11 @@ Routes:
 from __future__ import annotations
 
 import logging
+from typing import Any
 from uuid import UUID
 
-from typing import Any
-
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import ORJSONResponse
+from pydantic import ValidationError
 
 from packages.api.src.dependencies import get_orchestrator
 from packages.shared.src.types.models import (
@@ -124,11 +123,16 @@ async def create_tournament(
         The created tournament representation.
 
     Raises:
-        HTTPException 400: If the configuration is invalid or rejected by the orchestrator.
+        HTTPException 422: If the JSON body fails schema validation.
+        HTTPException 400: If the orchestrator rejects the configuration.
     """
     try:
-        config = TournamentConfig.model_validate(payload)
+        # JSON sends enums as strings; domain models use strict=True — relax at the HTTP boundary.
+        config = TournamentConfig.model_validate(payload, strict=False)
         tournament: Tournament = await orchestrator.create_tournament(config)
+    except ValidationError as exc:
+        logger.warning("Tournament create validation failed: %s", exc)
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
     except ValueError as exc:
         logger.warning("Invalid tournament config: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
