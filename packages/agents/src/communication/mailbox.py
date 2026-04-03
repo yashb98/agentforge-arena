@@ -71,7 +71,7 @@ class RedisMailbox:
 
         _key, data = result
         msg_dict = orjson.loads(data)
-        return AgentMessage.model_validate(msg_dict)
+        return AgentMessage.model_validate(msg_dict, strict=False)
 
     async def receive_all(self, role: AgentRole) -> list[AgentMessage]:
         """Receive all pending messages (non-blocking)."""
@@ -83,7 +83,7 @@ class RedisMailbox:
             if data is None:
                 break
             msg_dict = orjson.loads(data)
-            messages.append(AgentMessage.model_validate(msg_dict))
+            messages.append(AgentMessage.model_validate(msg_dict, strict=False))
 
         return messages
 
@@ -95,7 +95,7 @@ class RedisMailbox:
         messages = []
         for data in reversed(items):
             msg_dict = orjson.loads(data)
-            messages.append(AgentMessage.model_validate(msg_dict))
+            messages.append(AgentMessage.model_validate(msg_dict, strict=False))
 
         return messages
 

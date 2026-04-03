@@ -25,9 +25,8 @@ router = APIRouter(prefix="/api/v1", tags=["challenges"])
 # Maps challenge_id (str) → ChallengeResponse.
 _challenge_cache: dict[str, ChallengeResponse] | None = None
 
-# Root of the repository — two levels up from this file:
-#   packages/api/src/routes/challenges.py → repo root
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+# Root of the repository: packages/api/src/routes → parents[4] = repo root
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _LIBRARY_DIR = _REPO_ROOT / "challenges" / "library"
 
 
@@ -193,7 +192,7 @@ def _load_challenges() -> dict[str, ChallengeResponse]:
 
 def _get_challenge_cache() -> dict[str, ChallengeResponse]:
     """Return the in-memory challenge cache, loading from disk on first call."""
-    global _challenge_cache  # noqa: PLW0603
+    global _challenge_cache
     if _challenge_cache is None:
         _challenge_cache = _load_challenges()
     return _challenge_cache
