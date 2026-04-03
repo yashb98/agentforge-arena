@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     Float,
@@ -169,3 +170,16 @@ class EloRatingDB(Base):
         String(50), default="overall",
     )  # Rating category: overall, per_role, per_model
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class ModuleMemoryRecordDB(Base):
+    """Durable team/module memory records (L2 memory layer)."""
+
+    __tablename__ = "module_memory_records"
+
+    team_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    module_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    task: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decision: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)

@@ -123,6 +123,8 @@ class MemorySettings(BaseSettings):
     l1_key_prefix: str = "memory:l1"
     l1_ttl_seconds: int = 6 * 60 * 60
     l1_max_events: int = 50
+    l2_enabled: bool = True
+    l2_search_limit: int = 10
 
 
 class AppSettings(BaseSettings):

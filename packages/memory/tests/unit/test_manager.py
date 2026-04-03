@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -81,3 +82,28 @@ async def test_manager_degrades_gracefully_on_store_errors() -> None:
 
     # Should not raise even when write path fails.
     await manager.record(agent_id, AgentRole.TESTER, task="run tests")
+
+
+@pytest.mark.asyncio
+async def test_manager_uses_module_store_for_l2() -> None:
+    client = _FakeRedis()
+    store = WorkingMemoryStore(client, key_prefix="test:mm:l2")  # type: ignore[arg-type]
+    module_store = AsyncMock()
+    module_store.search = AsyncMock(return_value=[{"task": "checkpoint"}])
+    module_store.record = AsyncMock(return_value=None)
+    manager = MemoryManager(store, module_store=module_store)
+    agent_id = uuid4()
+    team_id = uuid4()
+
+    await manager.record(
+        agent_id,
+        AgentRole.ARCHITECT,
+        task="Design durable state",
+        decision="Use runtime_state",
+        metadata={"team_id": str(team_id), "module_name": "core.orchestrator"},
+    )
+    out = await manager.recall(agent_id, AgentRole.ARCHITECT, "durable")
+
+    assert out["l2"] == [{"task": "checkpoint"}]
+    module_store.record.assert_awaited_once()
+    module_store.search.assert_awaited_once()
