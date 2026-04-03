@@ -156,7 +156,7 @@ class SandboxManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, _stderr = await proc.communicate()
 
         if proc.returncode != 0:
             raise FileNotFoundError(f"File not found: {path}")
@@ -210,6 +210,27 @@ class SandboxManager:
                 return {"raw": stdout.decode()}
 
         return {"status": sandbox.status, "team_id": team_id}
+
+    async def run_command(self, team_id: str, argv: list[str]) -> dict:
+        """Run a command inside team project workspace."""
+        sandbox = self._sandboxes.get(team_id)
+        if not sandbox:
+            raise ValueError(f"No sandbox found for team {team_id}")
+        if not argv:
+            raise ValueError("argv must contain at least one token")
+
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=f"{sandbox.workspace_path}/project",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return {
+            "returncode": int(proc.returncode),
+            "stdout": stdout.decode(),
+            "stderr": stderr.decode(),
+        }
 
     async def destroy_sandbox(self, team_id: str) -> None:
         """Destroy a team's sandbox and clean up resources."""

@@ -258,3 +258,35 @@ async def test_destroy_sandbox_and_destroy_all(
         assert "d1" not in mgr._sandboxes
         await mgr.destroy_all()
     assert mgr._sandboxes == {}
+
+
+@pytest.mark.asyncio
+async def test_run_command_executes_in_team_workspace(
+    monkeypatch: pytest.MonkeyPatch, fake_settings: MagicMock
+) -> None:
+    monkeypatch.setattr(
+        "packages.sandbox.src.docker.manager.get_settings",
+        lambda: fake_settings,
+    )
+    shell_proc = _proc()
+    exec_proc = _proc()
+    with patch(
+        "packages.sandbox.src.docker.manager.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=shell_proc),
+    ), patch(
+        "packages.sandbox.src.docker.manager.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=exec_proc),
+    ):
+        mgr = SandboxManager()
+        await mgr.create_sandbox("cmd1")
+
+    run_proc = _proc(stdout=b"ok", stderr=b"", rc=0)
+    with patch(
+        "packages.sandbox.src.docker.manager.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=run_proc),
+    ) as create_exec:
+        out = await mgr.run_command("cmd1", ["echo", "ok"])
+
+    create_exec.assert_awaited()
+    assert out["returncode"] == 0
+    assert out["stdout"] == "ok"

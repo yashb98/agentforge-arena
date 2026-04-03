@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
 from packages.core.src.tournament.orchestrator import TournamentOrchestrator
+from packages.core.src.tournament.quality_runner import (
+    QualityCommandResult,
+    QualityRunResult,
+)
 from packages.shared.src.types.models import (
     AgentConfig,
     AgentRole,
@@ -140,6 +145,85 @@ async def test_advance_marathon_calls_transition(
     with patch.object(orchestrator, "_transition_phase", new_callable=AsyncMock) as tp:
         await orchestrator.advance_milestone(t.id)
     tp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_advance_marathon_blocks_on_required_quality_failure(
+    orchestrator: TournamentOrchestrator,
+    mock_session_factory: object,
+) -> None:
+    settings = MagicMock()
+    settings.llm.budget_per_tournament_usd = 500.0
+    cfg = _duel_config().model_copy(update={"format": TournamentFormat.MARATHON})
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+    ):
+        t = await orchestrator.create_tournament(cfg)
+    with (
+        patch.object(
+            orchestrator,
+            "_run_quality_pipeline",
+            new_callable=AsyncMock,
+            side_effect=ValueError("Quality gate failed"),
+        ),
+        pytest.raises(ValueError, match="Quality gate failed"),
+    ):
+        await orchestrator.advance_milestone(t.id)
+
+
+@pytest.mark.asyncio
+async def test_run_quality_pipeline_emits_started_and_passed_events(
+    orchestrator: TournamentOrchestrator,
+) -> None:
+    t = Tournament(
+        id=uuid4(),
+        format=TournamentFormat.DUEL,
+        challenge_id="url-shortener-saas",
+        config=_duel_config(),
+        team_ids=[uuid4()],
+    )
+    command = SimpleNamespace(name="lint", cmd=["echo", "ok"], required=True)
+    spec = MagicMock()
+    spec.quality.commands = [command]
+    run_result = QualityRunResult(
+        team_id=str(t.team_ids[0]),
+        command_results=[
+            QualityCommandResult(
+                name="lint",
+                cmd=["echo", "ok"],
+                required=True,
+                returncode=0,
+                stdout="ok",
+                stderr="",
+            )
+        ],
+    )
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.load_validated_library_challenge",
+            return_value=("md", spec),
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.QualityRunner.run_for_team",
+            new_callable=AsyncMock,
+            return_value=run_result,
+        ),
+    ):
+        await orchestrator._run_quality_pipeline(t, trigger="test", fail_on_required=True)
+
+    event_types = [
+        call.kwargs.get("event_type") if "event_type" in call.kwargs else call.args[0]
+        for call in orchestrator._events.publish.await_args_list
+    ]
+    assert "tournament.quality.started" in event_types
+    assert "tournament.quality.passed" in event_types
 
 
 @pytest.mark.asyncio
@@ -323,9 +407,11 @@ async def test_hydrate_missing_row_raises(orchestrator: TournamentOrchestrator) 
         yield session
 
     tid = uuid4()
-    with patch("packages.core.src.tournament.orchestrator.get_session", cm):
-        with pytest.raises(ValueError, match="not found in database"):
-            await orchestrator.hydrate_tournament_from_db(tid)
+    with (
+        patch("packages.core.src.tournament.orchestrator.get_session", cm),
+        pytest.raises(ValueError, match="not found in database"),
+    ):
+        await orchestrator.hydrate_tournament_from_db(tid)
 
 
 @pytest.mark.asyncio

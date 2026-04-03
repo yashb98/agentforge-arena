@@ -14,23 +14,27 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from packages.core.src.tournament.quality_runner import QualityRunner
 from packages.shared.src.challenge_library import load_validated_library_challenge
 from packages.shared.src.config import get_settings
 from packages.shared.src.db.base import get_session
 from packages.shared.src.db.models import TeamDB, TournamentDB
-from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
     Tournament,
     TournamentConfig,
     TournamentFormat,
     TournamentPhase,
 )
+
+if TYPE_CHECKING:
+    from packages.shared.src.events.bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +200,7 @@ class TournamentOrchestrator:
         tournament.started_at = datetime.utcnow()
 
         # 1. Provision sandboxes for each team
-        for i, team_config in enumerate(tournament.config.teams):
+        for team_config in tournament.config.teams:
             team_id = uuid4()
             sandbox_id = await self._sandbox.create_sandbox(  # type: ignore[attr-defined]
                 team_id=str(team_id),
@@ -280,7 +284,7 @@ class TournamentOrchestrator:
 
         # Update database
         async with get_session() as session:
-            result = await session.execute(
+            await session.execute(
                 TournamentDB.__table__.update()  # type: ignore[union-attr]
                 .where(TournamentDB.id == tournament.id)
                 .values(current_phase=next_phase.value, updated_at=datetime.utcnow())
@@ -394,6 +398,7 @@ class TournamentOrchestrator:
                     )
 
             case TournamentPhase.BUILD:
+                await self._run_quality_pipeline(tournament, trigger="phase_build")
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "build_start",
@@ -404,6 +409,7 @@ class TournamentOrchestrator:
                 await self._setup_cross_review(tournament)
 
             case TournamentPhase.FIX:
+                await self._run_quality_pipeline(tournament, trigger="phase_fix")
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "fix_start",
@@ -794,8 +800,73 @@ class TournamentOrchestrator:
         if not nxt:
             msg = "No next phase from current state"
             raise ValueError(msg)
+        await self._run_quality_pipeline(
+            tournament,
+            trigger=f"milestone:{tournament.current_phase.value}->{nxt.value}",
+            fail_on_required=True,
+        )
         await self._transition_phase(tournament, nxt)
         return tournament
+
+    async def _run_quality_pipeline(
+        self,
+        tournament: Tournament,
+        *,
+        trigger: str,
+        fail_on_required: bool = False,
+    ) -> None:
+        """Execute challenge quality commands and optionally gate progress."""
+        repo_root = Path(__file__).resolve().parents[4]
+        try:
+            _, spec = load_validated_library_challenge(repo_root, tournament.challenge_id)
+        except (FileNotFoundError, ValidationError, ValueError):
+            logger.exception("Skipping quality pipeline: invalid challenge spec")
+            return
+
+        commands = spec.quality.commands
+        if not commands:
+            return
+
+        runner = QualityRunner(self._sandbox)
+        failures: list[dict[str, object]] = []
+        for team_id in tournament.team_ids:
+            await self._events.publish(
+                "tournament.quality.started",
+                source="core.orchestrator",
+                tournament_id=tournament.id,
+                team_id=team_id,
+                payload={"trigger": trigger, "command_count": len(commands)},
+            )
+            result = await runner.run_for_team(team_id=str(team_id), commands=commands)
+            payload = {
+                "trigger": trigger,
+                "passed": result.passed,
+                "commands": [
+                    {
+                        "name": r.name,
+                        "required": r.required,
+                        "returncode": r.returncode,
+                        "passed": r.passed,
+                    }
+                    for r in result.command_results
+                ],
+            }
+            await self._events.publish(
+                "tournament.quality.passed" if result.passed else "tournament.quality.failed",
+                source="core.orchestrator",
+                tournament_id=tournament.id,
+                team_id=team_id,
+                payload=payload,
+            )
+            if not result.passed:
+                failures.append({"team_id": str(team_id), "payload": payload})
+
+        if fail_on_required and failures:
+            msg = (
+                "Quality gate failed for required command(s): "
+                + ", ".join(f["team_id"] for f in failures)
+            )
+            raise ValueError(msg)
 
     async def hydrate_tournament_from_db(self, tournament_id: UUID) -> Tournament:
         """Load tournament from DB into memory if missing."""
