@@ -7,8 +7,8 @@ instead of file-based JSON inboxes.
 
 from __future__ import annotations
 
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -21,7 +21,6 @@ from packages.shared.src.types.models import (
     AgentStatus,
     MessageType,
 )
-
 
 # ============================================================
 # Fixtures
@@ -116,6 +115,35 @@ class TestAgentProcessMailbox:
         """Processing a message should increment actions_count."""
         await agent_process._process_message(sample_message)
         assert agent_process.agent.actions_count == 1
+
+    @pytest.mark.asyncio
+    async def test_process_message_calls_memory_hooks(
+        self, sample_agent: Agent, mock_mailbox: MagicMock, sample_message: AgentMessage
+    ) -> None:
+        """When memory manager is configured, recall/record hooks should run."""
+        llm_client = MagicMock()
+        llm_client.completion = AsyncMock(
+            return_value=SimpleNamespace(
+                content="Implemented changes.",
+                usage=SimpleNamespace(total_tokens=10, cost_usd=0.01),
+            )
+        )
+        memory_manager = MagicMock()
+        memory_manager.recall = AsyncMock(return_value={"l1": {"last_task": "x"}})
+        memory_manager.record = AsyncMock()
+        process = AgentProcess(
+            agent=sample_agent,
+            system_prompt="You are a builder agent.",
+            workspace_path="/tmp/test-workspace",
+            mailbox=mock_mailbox,
+            llm_client=llm_client,
+            memory_manager=memory_manager,
+        )
+
+        await process._process_message(sample_message)
+
+        memory_manager.recall.assert_awaited_once()
+        memory_manager.record.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_start_sets_active_status(self, agent_process: AgentProcess) -> None:

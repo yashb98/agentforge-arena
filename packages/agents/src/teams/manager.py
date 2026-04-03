@@ -11,15 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid4
-
-import redis.asyncio as aioredis
 
 from packages.agents.src.communication.mailbox import RedisMailbox
 from packages.shared.src.config import get_settings
-from packages.shared.src.events.bus import EventBus
 from packages.shared.src.types.models import (
     Agent,
     AgentMessage,
@@ -27,6 +26,11 @@ from packages.shared.src.types.models import (
     AgentStatus,
     TeamConfig,
 )
+
+if TYPE_CHECKING:
+    import redis.asyncio as aioredis
+
+    from packages.shared.src.events.bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,25 @@ AGENT_PROMPT_FILES: dict[AgentRole, str] = {
 }
 
 
+class MemoryManagerProtocol(Protocol):
+    """Minimal memory hooks used by agent runtime."""
+
+    async def recall(self, agent_id: UUID, role: AgentRole, query: str) -> dict:
+        ...
+
+    async def record(
+        self,
+        agent_id: UUID,
+        role: AgentRole,
+        *,
+        task: str | None = None,
+        decision: str | None = None,
+        notes: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        ...
+
+
 class AgentProcess:
     """Represents a running agent process with Redis-backed communication."""
 
@@ -51,12 +74,14 @@ class AgentProcess:
         workspace_path: str,
         mailbox: RedisMailbox,
         llm_client: object | None = None,
+        memory_manager: MemoryManagerProtocol | None = None,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
         self.workspace_path = workspace_path
         self._mailbox = mailbox
         self._llm_client = llm_client
+        self._memory_manager = memory_manager
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -109,15 +134,27 @@ class AgentProcess:
             return
 
         # Build conversation for LLM
+        memory_context: dict | None = None
+        if self._memory_manager is not None:
+            try:
+                memory_context = await self._memory_manager.recall(
+                    self.agent.id,
+                    self.agent.role,
+                    query=f"{message.message_type.value}:{json.dumps(message.payload)}",
+                )
+            except Exception:
+                logger.exception("Memory recall failed for agent %s", self.agent.id)
+
+        user_content = (
+            f"[{message.message_type.value}] from {message.from_agent.value}:\n"
+            f"{json.dumps(message.payload)}"
+        )
+        if memory_context:
+            user_content += f"\n\n[MEMORY]\n{json.dumps(memory_context)}"
+
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"[{message.message_type.value}] from {message.from_agent.value}:\n"
-                    f"{json.dumps(message.payload)}"
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
 
         try:
@@ -143,6 +180,27 @@ class AgentProcess:
                 response.usage.cost_usd,
             )
 
+            if self._memory_manager is not None:
+                try:
+                    module_name = None
+                    if isinstance(message.payload, dict):
+                        module_name_raw = message.payload.get("module_name")
+                        if isinstance(module_name_raw, str):
+                            module_name = module_name_raw
+                    await self._memory_manager.record(
+                        self.agent.id,
+                        self.agent.role,
+                        task=f"{message.message_type.value} from {message.from_agent.value}",
+                        decision=getattr(response, "content", "")[:500],
+                        metadata={
+                            "team_id": str(self.agent.team_id),
+                            "module_name": module_name or "general",
+                            "message_type": message.message_type.value,
+                        },
+                    )
+                except Exception:
+                    logger.exception("Memory record failed for agent %s", self.agent.id)
+
         except Exception:
             self.agent.errors_count += 1
             logger.exception("Agent %s LLM call failed", self.agent.role.value)
@@ -156,10 +214,8 @@ class AgentProcess:
         self.agent.status = AgentStatus.TERMINATED
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     @property
     def is_responsive(self) -> bool:
@@ -178,10 +234,12 @@ class AgentTeamManager:
         event_bus: EventBus,
         redis: aioredis.Redis | None = None,
         llm_client: object | None = None,
+        memory_manager: MemoryManagerProtocol | None = None,
     ) -> None:
         self._events = event_bus
         self._redis = redis
         self._llm_client = llm_client
+        self._memory_manager = memory_manager
         self._teams: dict[UUID, list[AgentProcess]] = {}
         self._mailboxes: dict[UUID, RedisMailbox] = {}
 
@@ -228,6 +286,7 @@ class AgentTeamManager:
                 workspace_path=workspace_path,
                 mailbox=mailbox,
                 llm_client=self._llm_client,
+                memory_manager=self._memory_manager,
             )
 
             await process.start()
