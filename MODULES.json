@@ -1,0 +1,39 @@
+{
+  "modules": [
+    {
+      "module_name": "shared",
+      "paths": ["packages/shared/src"],
+      "public_entrypoints": ["packages.shared.src"],
+      "depends_on": [],
+      "owners": ["platform"]
+    },
+    {
+      "module_name": "sandbox",
+      "paths": ["packages/sandbox/src"],
+      "public_entrypoints": ["packages.sandbox.src"],
+      "depends_on": ["shared"],
+      "owners": ["runtime"]
+    },
+    {
+      "module_name": "agents",
+      "paths": ["packages/agents/src"],
+      "public_entrypoints": ["packages.agents.src"],
+      "depends_on": ["shared", "memory"],
+      "owners": ["agent-runtime"]
+    },
+    {
+      "module_name": "memory",
+      "paths": ["packages/memory/src"],
+      "public_entrypoints": ["packages.memory.src"],
+      "depends_on": ["shared"],
+      "owners": ["memory"]
+    },
+    {
+      "module_name": "core",
+      "paths": ["packages/core/src"],
+      "public_entrypoints": ["packages.core.src"],
+      "depends_on": ["shared", "sandbox", "agents", "memory"],
+      "owners": ["orchestration"]
+    }
+  ]
+}

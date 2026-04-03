@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from packages.shared.src.types.module_contracts import ModuleManifestDict
+from packages.shared.src.types.module_contracts import ModuleManifest, ModuleManifestDict
 
 
 def test_module_manifest_dict_typed_shape() -> None:
@@ -13,3 +13,15 @@ def test_module_manifest_dict_typed_shape() -> None:
     }
     assert m["module_name"] == "ingestion"
     assert "shared.types" in m["depends_on"]
+
+
+def test_module_manifest_model_shape() -> None:
+    manifest = ModuleManifest(
+        module_name="core",
+        paths=["packages/core/src"],
+        public_entrypoints=["packages.core.src.tournament.orchestrator"],
+        depends_on=["shared"],
+        owners=["platform"],
+    )
+    assert manifest.module_name == "core"
+    assert manifest.paths == ["packages/core/src"]

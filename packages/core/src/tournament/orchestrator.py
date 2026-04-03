@@ -866,7 +866,7 @@ class TournamentOrchestrator:
         if not commands:
             return
 
-        runner = QualityRunner(self._sandbox)
+        runner = QualityRunner(self._sandbox, repo_root=repo_root)
         failures: list[dict[str, object]] = []
         for team_id in tournament.team_ids:
             await self._events.publish(
