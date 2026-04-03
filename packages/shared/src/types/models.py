@@ -126,8 +126,8 @@ class TeamConfig(BaseModel):
     preset: str = Field(default="balanced", description="Preset config name")
     agents: list[AgentConfig] = Field(min_length=3, max_length=8)
     strategy: dict[str, object] = Field(default_factory=dict)
-    sandbox_memory: str = "4g"
-    sandbox_cpus: int = Field(default=2, ge=1, le=8)
+    sandbox_memory: str = Field(default="4g", pattern=r"^\d+[gG]$")
+    sandbox_cpus: int = Field(default=2, ge=1, le=32)
     # Hierarchical teams (P1): optional parent for sub-team / pod coordination
     parent_team_id: UUID | None = Field(
         default=None,

@@ -21,6 +21,8 @@ def fake_settings() -> MagicMock:
     s = MagicMock()
     s.sandbox.workspace_base = "/tmp/arena-sandbox-test"
     s.sandbox.network_allow = ["pypi.org"]
+    s.sandbox.max_memory_gb = 32
+    s.sandbox.max_cpus = 16
     return s
 
 
@@ -290,3 +292,31 @@ async def test_run_command_executes_in_team_workspace(
     create_exec.assert_awaited()
     assert out["returncode"] == 0
     assert out["stdout"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_rejects_invalid_resource_caps(
+    monkeypatch: pytest.MonkeyPatch, fake_settings: MagicMock
+) -> None:
+    monkeypatch.setattr(
+        "packages.sandbox.src.docker.manager.get_settings",
+        lambda: fake_settings,
+    )
+    mgr = SandboxManager()
+    with pytest.raises(ValueError, match="exceeds sandbox cap"):
+        await mgr.create_sandbox("cap1", memory="64g", cpus=2)
+    with pytest.raises(ValueError, match="exceeds sandbox cap"):
+        await mgr.create_sandbox("cap2", memory="4g", cpus=99)
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_rejects_bad_memory_format(
+    monkeypatch: pytest.MonkeyPatch, fake_settings: MagicMock
+) -> None:
+    monkeypatch.setattr(
+        "packages.sandbox.src.docker.manager.get_settings",
+        lambda: fake_settings,
+    )
+    mgr = SandboxManager()
+    with pytest.raises(ValueError, match="Invalid memory format"):
+        await mgr.create_sandbox("badmem", memory="4096m", cpus=2)

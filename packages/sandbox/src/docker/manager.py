@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 from dataclasses import dataclass, field
 
@@ -36,6 +37,13 @@ class SandboxManager:
     def __init__(self) -> None:
         self._sandboxes: dict[str, SandboxInfo] = {}
 
+    def _memory_to_gib(self, memory: str) -> int:
+        match = re.match(r"^(\d+)[gG]$", memory.strip())
+        if not match:
+            msg = f"Invalid memory format {memory!r}; expected '<n>g'"
+            raise ValueError(msg)
+        return int(match.group(1))
+
     async def create_sandbox(
         self,
         team_id: str,
@@ -48,6 +56,19 @@ class SandboxManager:
         Returns the sandbox ID.
         """
         settings = get_settings()
+        memory_gib = self._memory_to_gib(memory)
+        if memory_gib > settings.sandbox.max_memory_gb:
+            msg = (
+                f"Requested memory {memory} exceeds sandbox cap "
+                f"{settings.sandbox.max_memory_gb}g"
+            )
+            raise ValueError(msg)
+        if cpus > settings.sandbox.max_cpus:
+            msg = (
+                f"Requested cpus {cpus} exceeds sandbox cap "
+                f"{settings.sandbox.max_cpus}"
+            )
+            raise ValueError(msg)
         workspace = f"{settings.sandbox.workspace_base}/team-{team_id}"
         network_allows = settings.sandbox.network_allow
 

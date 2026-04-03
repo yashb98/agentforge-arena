@@ -85,6 +85,8 @@ class SandboxSettings(BaseSettings):
 
     default_memory: str = "4g"
     default_cpus: int = 2
+    max_memory_gb: int = 32
+    max_cpus: int = 16
     default_disk: str = "10g"
     max_idle_seconds: int = 90
     network_allow: list[str] = Field(

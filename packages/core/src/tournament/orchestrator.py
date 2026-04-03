@@ -200,6 +200,8 @@ class TournamentOrchestrator:
             raise ValueError(msg)
 
         tournament.started_at = datetime.utcnow()
+        settings = get_settings()
+        resource_profile = await self._load_challenge_resource_profile(tournament)
 
         # 1. Provision sandboxes for each team
         team_id_to_name: dict[UUID, str] = {}
@@ -207,10 +209,17 @@ class TournamentOrchestrator:
         team_id_to_parent_name: dict[UUID, str] = {}
         for team_config in tournament.config.teams:
             team_id = uuid4()
+            memory, cpus = self._resolve_team_sandbox_resources(
+                team_memory=team_config.sandbox_memory,
+                team_cpus=team_config.sandbox_cpus,
+                default_memory=settings.sandbox.default_memory,
+                default_cpus=settings.sandbox.default_cpus,
+                profile=resource_profile,
+            )
             sandbox_id = await self._sandbox.create_sandbox(  # type: ignore[attr-defined]
                 team_id=str(team_id),
-                memory=team_config.sandbox_memory,
-                cpus=team_config.sandbox_cpus,
+                memory=memory,
+                cpus=cpus,
             )
 
             # 2. Spawn agent team
@@ -1024,6 +1033,39 @@ class TournamentOrchestrator:
 
     def get_team_hierarchy(self, tournament_id: UUID) -> dict[UUID, list[UUID]]:
         return self._team_hierarchy.get(tournament_id, {})
+
+    async def _load_challenge_resource_profile(self, tournament: Tournament) -> dict[str, object]:
+        repo_root = Path(__file__).resolve().parents[4]
+        try:
+            _, spec = load_validated_library_challenge(repo_root, tournament.challenge_id)
+        except (FileNotFoundError, ValidationError, ValueError):
+            return {}
+
+        by_phase = spec.resources.by_phase.get(TournamentPhase.PREP.value)
+        if by_phase is not None:
+            return {"memory": by_phase.memory, "cpus": by_phase.cpus}
+        by_format = spec.resources.by_format.get(tournament.format.value)
+        if by_format is not None:
+            return {"memory": by_format.memory, "cpus": by_format.cpus}
+        return {}
+
+    def _resolve_team_sandbox_resources(
+        self,
+        *,
+        team_memory: str,
+        team_cpus: int,
+        default_memory: str,
+        default_cpus: int,
+        profile: dict[str, object],
+    ) -> tuple[str, int]:
+        # Team-level explicit values always win; profile applies to defaults only.
+        memory = team_memory
+        cpus = team_cpus
+        if team_memory == default_memory and isinstance(profile.get("memory"), str):
+            memory = str(profile["memory"])
+        if team_cpus == default_cpus and isinstance(profile.get("cpus"), int):
+            cpus = int(profile["cpus"])
+        return memory, cpus
 
     def _calculate_rounds(self, format: TournamentFormat, team_count: int) -> int:
         """Calculate total rounds for a tournament format."""

@@ -707,6 +707,65 @@ async def test_start_tournament_provisions_teams(
 
 
 @pytest.mark.asyncio
+async def test_start_tournament_applies_resource_profile_for_default_team_values(
+    orchestrator: TournamentOrchestrator,
+    mock_session_factory: object,
+) -> None:
+    settings = MagicMock()
+    settings.llm.budget_per_tournament_usd = 500.0
+    settings.sandbox.default_memory = "4g"
+    settings.sandbox.default_cpus = 2
+    cfg = _duel_config()
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+    ):
+        t = await orchestrator.create_tournament(cfg)
+
+    fake_spec = SimpleNamespace(
+        resources=SimpleNamespace(
+            by_phase={},
+            by_format={
+                "duel": SimpleNamespace(memory="8g", cpus=4),
+            },
+        )
+    )
+
+    async def _noop_health(_t: object) -> None:
+        return None
+
+    with (
+        patch(
+            "packages.core.src.tournament.orchestrator.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.load_validated_library_challenge",
+            return_value=("md", fake_spec),
+        ),
+        patch(
+            "packages.core.src.tournament.orchestrator.get_session",
+            mock_session_factory,
+        ),
+        patch.object(orchestrator, "_deliver_challenge", new_callable=AsyncMock),
+        patch.object(orchestrator, "_transition_phase", new_callable=AsyncMock),
+        patch.object(orchestrator, "_health_monitor", _noop_health),
+    ):
+        await orchestrator.start_tournament(t.id)
+
+    create_calls = orchestrator._sandbox.create_sandbox.await_args_list
+    assert create_calls
+    assert create_calls[0].kwargs["memory"] == "8g"
+    assert create_calls[0].kwargs["cpus"] == 4
+
+
+@pytest.mark.asyncio
 async def test_start_tournament_not_found(
     orchestrator: TournamentOrchestrator,
 ) -> None:
