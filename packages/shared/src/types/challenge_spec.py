@@ -83,6 +83,34 @@ class QualitySpec(BaseModel):
     commands: list[QualityCommandSpec] = Field(default_factory=list)
 
 
+class ResourceAllocationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memory: str = Field(default="4g", pattern=r"^\d+[gG]$")
+    cpus: int = Field(default=2, ge=1, le=32)
+
+
+class ChallengeResourcesSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    by_format: dict[str, ResourceAllocationSpec] = Field(default_factory=dict)
+    by_phase: dict[str, ResourceAllocationSpec] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_keys(self) -> ChallengeResourcesSpec:
+        valid_formats = {f.value for f in TournamentFormat}
+        for key in self.by_format:
+            if key not in valid_formats:
+                msg = f"resources.by_format key {key!r} must be a TournamentFormat value"
+                raise ValueError(msg)
+        valid_phases = {p.value for p in TournamentPhase} - {"cancelled", "complete"}
+        for key in self.by_phase:
+            if key not in valid_phases:
+                msg = f"resources.by_phase key {key!r} must be a TournamentPhase value"
+                raise ValueError(msg)
+        return self
+
+
 class JudgeCriterionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -150,6 +178,7 @@ class ChallengeSpecDocument(BaseModel):
     orchestration: OrchestrationSpec
     delivery: DeliverySpec
     quality: QualitySpec
+    resources: ChallengeResourcesSpec = Field(default_factory=ChallengeResourcesSpec)
     judge: JudgeSpec
     agents: AgentsSpec
     hidden_test_hints: list[str] = Field(default_factory=list)

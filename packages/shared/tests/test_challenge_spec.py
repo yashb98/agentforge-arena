@@ -33,6 +33,7 @@ def _minimal_spec_dict() -> dict:
         },
         "delivery": {"root_readme_required": True, "artifact_globs": []},
         "quality": {"commands": []},
+        "resources": {"by_format": {}, "by_phase": {}},
         "judge": {
             "rubric_version": "1",
             "criteria": [{"id": "functionality", "weight": 1.0, "description": "x"}],
@@ -103,3 +104,17 @@ def test_milestone_phase_enum() -> None:
     ]
     doc = ChallengeSpecDocument.model_validate(d)
     assert doc.orchestration.milestones[0].phase == TournamentPhase.RESEARCH
+
+
+def test_resources_by_format_key_must_be_tournament_format() -> None:
+    d = _minimal_spec_dict()
+    d["resources"] = {"by_format": {"nope": {"memory": "8g", "cpus": 4}}, "by_phase": {}}
+    with pytest.raises(ValidationError, match=r"resources\.by_format"):
+        ChallengeSpecDocument.model_validate(d)
+
+
+def test_resources_by_phase_key_must_be_tournament_phase() -> None:
+    d = _minimal_spec_dict()
+    d["resources"] = {"by_format": {}, "by_phase": {"not_a_phase": {"memory": "8g", "cpus": 4}}}
+    with pytest.raises(ValidationError, match=r"resources\.by_phase"):
+        ChallengeSpecDocument.model_validate(d)
