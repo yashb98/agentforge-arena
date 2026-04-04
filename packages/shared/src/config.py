@@ -60,7 +60,7 @@ class LLMSettings(BaseSettings):
     openai_api_key: SecretStr | None = None
     default_model: str = "claude-sonnet-4-6"
     max_tokens_default: int = 8192
-    timeout_seconds: int = 300
+    timeout_seconds: int = 30
     budget_per_tournament_usd: float = 500.0
     budget_alert_threshold: float = 0.8
 

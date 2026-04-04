@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING, Any
+from typing import Any
+from uuid import UUID
 
 from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,9 +14,6 @@ from packages.memory.src.module.hybrid_query import sanitize_fulltext_query
 from packages.memory.src.module.rrf import reciprocal_rank_fusion
 from packages.shared.src.db.base import get_session
 from packages.shared.src.db.models import ModuleMemoryRecordDB
-
-if TYPE_CHECKING:
-    from uuid import UUID
 
 SessionProvider = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -94,9 +92,9 @@ class ModuleMemoryStore:
         ``query_embedding`` is length *1536* and rows store embeddings.
         """
         safe = sanitize_fulltext_query(query) or ""
-        fts_ids: list[Any] = []
-        like_ids: list[Any] = []
-        vec_ids: list[Any] = []
+        fts_ids: list[UUID] = []
+        like_ids: list[UUID] = []
+        vec_ids: list[UUID] = []
 
         concat = func.concat(
             func.coalesce(ModuleMemoryRecordDB.task, ""),

@@ -39,7 +39,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
     symbol_name,
     symbol_type UNINDEXED,
     content_preview,
-    tokenize = 'porter unicode61'
+    tokenize = 'porter'
 );
 """
 

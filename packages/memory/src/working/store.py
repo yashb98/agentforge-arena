@@ -59,17 +59,55 @@ class WorkingMemoryStore:
         )
         return current
 
-    async def append_event(self, agent_id: UUID, event: dict[str, Any]) -> dict[str, Any]:
-        """Append a timestamped event into bounded recent history."""
+    async def append_event(
+        self,
+        agent_id: UUID,
+        event: dict[str, Any],
+        *,
+        quality_score: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Append a timestamped event into bounded recent history.
+
+        When over ``max_events``, evicts **lowest quality** first; ties break on
+        **oldest** sequence number (LRU among equal-quality items).
+        """
         current = await self.get_state(agent_id)
         events_raw = current.get("recent_events", [])
-        events = events_raw if isinstance(events_raw, list) else []
-        event_with_time = {
+        events: list[dict[str, Any]] = [e for e in events_raw if isinstance(e, dict)]
+
+        seq = int(current.get("_event_seq", 0)) + 1
+        current["_event_seq"] = seq
+
+        q = quality_score
+        if q is None:
+            raw_q = event.get("quality_score")
+            if isinstance(raw_q, (int, float)):
+                q = float(raw_q)
+            else:
+                q = 0.5
+        q = max(0.0, min(1.0, float(q)))
+
+        payload = {k: v for k, v in event.items() if k != "quality_score"}
+        wrapped: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(),
-            **event,
+            "_seq": seq,
+            "_quality": q,
+            **payload,
         }
-        events.append(event_with_time)
-        current["recent_events"] = events[-self._max_events :]
+        events.append(wrapped)
+
+        while len(events) > self._max_events:
+            idx_remove = min(
+                range(len(events)),
+                key=lambda i: (
+                    float(events[i].get("_quality", 0.5)),
+                    int(events[i].get("_seq", i)),
+                ),
+            )
+            del events[idx_remove]
+
+        current["recent_events"] = events
         await self._redis.set(
             self._key(agent_id),
             json.dumps(current),

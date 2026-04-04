@@ -68,7 +68,13 @@ class _FailingWorkingStore:
     async def upsert_state(self, agent_id: Any, patch: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("boom")
 
-    async def append_event(self, agent_id: Any, event: dict[str, Any]) -> dict[str, Any]:
+    async def append_event(
+        self,
+        agent_id: Any,
+        event: dict[str, Any],
+        *,
+        quality_score: float | None = None,
+    ) -> dict[str, Any]:
         raise RuntimeError("boom")
 
 

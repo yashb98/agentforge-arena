@@ -22,7 +22,13 @@ class WorkingStoreProtocol(Protocol):
     async def upsert_state(self, agent_id: UUID, patch: dict[str, Any]) -> dict[str, Any]:
         ...
 
-    async def append_event(self, agent_id: UUID, event: dict[str, Any]) -> dict[str, Any]:
+    async def append_event(
+        self,
+        agent_id: UUID,
+        event: dict[str, Any],
+        *,
+        quality_score: float | None = None,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -134,6 +140,12 @@ class MemoryManager:
             if isinstance(module_name_meta, str):
                 patch["module_name"] = module_name_meta
 
+        q_meta: float | None = None
+        if metadata is not None:
+            raw_q = metadata.get("memory_quality_score")
+            if isinstance(raw_q, (int, float)):
+                q_meta = float(raw_q)
+
         try:
             await self._working_store.upsert_state(agent_id, patch)
             await self._working_store.append_event(
@@ -143,6 +155,7 @@ class MemoryManager:
                     "task": task,
                     "decision": decision,
                 },
+                quality_score=q_meta,
             )
             if self._module_store is not None:
                 team_id_raw = patch.get("team_id")
