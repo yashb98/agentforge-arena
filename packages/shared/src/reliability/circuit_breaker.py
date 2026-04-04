@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TypeVar
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class CircuitState(str, Enum):
+class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -39,11 +39,14 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        if self._state == CircuitState.OPEN and self._opened_at is not None:
-            if time.monotonic() - self._opened_at >= self.reset_timeout_seconds:
-                self._state = CircuitState.HALF_OPEN
-                self._half_open_trials = 0
-                logger.info("Circuit %s half-open after cooldown", self.name)
+        if (
+            self._state == CircuitState.OPEN
+            and self._opened_at is not None
+            and time.monotonic() - self._opened_at >= self.reset_timeout_seconds
+        ):
+            self._state = CircuitState.HALF_OPEN
+            self._half_open_trials = 0
+            logger.info("Circuit %s half-open after cooldown", self.name)
         return self._state
 
     def allow_request(self) -> bool:

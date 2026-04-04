@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Hashable
+from collections.abc import Hashable
 
 DEFAULT_RRF_K = 60
 

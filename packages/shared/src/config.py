@@ -60,7 +60,22 @@ class LLMSettings(BaseSettings):
     openai_api_key: SecretStr | None = None
     default_model: str = "claude-sonnet-4-6"
     max_tokens_default: int = 8192
-    timeout_seconds: int = 30
+    # Generic fallback when no task kind is supplied (see llm/task_timeout.py).
+    timeout_seconds: int = Field(default=60, ge=10, le=900)
+    # Per-task HTTP read timeouts (seconds); combined with max_tokens / tool-round bumps in resolver.
+    timeout_agent_tools_seconds: int = Field(default=90, ge=10, le=900)
+    timeout_agent_planning_seconds: int = Field(default=180, ge=10, le=900)
+    timeout_agent_review_seconds: int = Field(default=120, ge=10, le=900)
+    timeout_agent_research_seconds: int = Field(default=150, ge=10, le=900)
+    timeout_research_peer_review_seconds: int = Field(default=150, ge=10, le=900)
+    timeout_research_architecture_seed_seconds: int = Field(default=180, ge=10, le=900)
+    timeout_judge_seconds: int = Field(default=120, ge=10, le=900)
+    timeout_embedding_seconds: int = Field(default=60, ge=10, le=900)
+    timeout_compression_seconds: int = Field(default=90, ge=10, le=900)
+    # Global clamp for resolved timeouts; floor for agent+tools interactions.
+    timeout_floor_seconds: int = Field(default=10, ge=5, le=120)
+    timeout_ceiling_seconds: int = Field(default=900, ge=60, le=3600)
+    timeout_agent_tools_floor: int = Field(default=45, ge=10, le=300)
     budget_per_tournament_usd: float = 500.0
     budget_alert_threshold: float = 0.8
 

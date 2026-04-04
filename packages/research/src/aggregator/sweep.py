@@ -193,26 +193,6 @@ class GitHubSearcher:
         )
         return guarded if isinstance(guarded, dict) else None
 
-    async def _get_text(self, url: str, *, timeout: float = 15.0) -> str | None:
-        async def call() -> str:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.text
-
-        if self._breaker is None:
-            try:
-                return await call()
-            except httpx.HTTPError:
-                return None
-        out = await circuit_breaker_http_guard(
-            self._breaker,
-            call,
-            fallback=None,
-            on_error=None,
-        )
-        return out if isinstance(out, str) else None
-
     async def search_repos(
         self,
         query: str,

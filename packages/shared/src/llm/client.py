@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from packages.shared.src.config import get_settings
+from packages.shared.src.llm.task_timeout import LLMTaskKind, resolve_llm_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,10 @@ class LLMClient:
         settings = get_settings()
         self._base_url = settings.llm.litellm_proxy_url.rstrip("/")
         self._default_model = settings.llm.default_model
-        self._timeout = settings.llm.timeout_seconds
+        ceiling = float(settings.llm.timeout_ceiling_seconds)
         self._http = httpx.AsyncClient(
             base_url=self._base_url,
-            timeout=httpx.Timeout(float(self._timeout), connect=10.0),
+            timeout=httpx.Timeout(ceiling, connect=10.0),
         )
         self._langfuse = langfuse
 
@@ -81,6 +82,10 @@ class LLMClient:
         tool_choice: dict[str, Any] | None = None,
         trace_name: str | None = None,
         trace_metadata: dict[str, Any] | None = None,
+        task_kind: LLMTaskKind | None = None,
+        timeout_seconds: int | None = None,
+        agent_timeout_ceiling: int | None = None,
+        tool_round_index: int = 0,
     ) -> LLMResponse:
         """Make an LLM completion call via LiteLLM proxy.
 
@@ -93,6 +98,10 @@ class LLMClient:
             tool_choice: Tool selection strategy.
             trace_name: Langfuse trace name for observability.
             trace_metadata: Additional metadata for the Langfuse trace.
+            task_kind: When set (and ``timeout_seconds`` is not), picks base timeout from settings.
+            timeout_seconds: Explicit HTTP read timeout for this request (clamped to settings floor/ceiling).
+            agent_timeout_ceiling: Optional cap from ``AgentConfig.timeout_seconds`` (arena agents).
+            tool_round_index: Multi-tool agent loop index; larger contexts get slightly more time.
 
         Returns:
             Parsed LLMResponse with content, tool_calls, usage, and cost.
@@ -100,6 +109,22 @@ class LLMClient:
         Raises:
             httpx.HTTPStatusError: If the LLM proxy returns an error.
         """
+        llm_settings = get_settings().llm
+        if timeout_seconds is not None:
+            lo = llm_settings.timeout_floor_seconds
+            hi = llm_settings.timeout_ceiling_seconds
+            resolved_read = max(lo, min(int(timeout_seconds), hi))
+        else:
+            kind = task_kind or LLMTaskKind.DEFAULT
+            resolved_read = resolve_llm_timeout_seconds(
+                llm_settings,
+                kind,
+                max_tokens=max_tokens,
+                has_tools=bool(tools),
+                tool_round_index=tool_round_index,
+                agent_timeout_ceiling=agent_timeout_ceiling,
+            )
+
         resolved_model = model or self._default_model
         start = time.monotonic()
 
@@ -116,18 +141,26 @@ class LLMClient:
 
         # Langfuse generation span
         generation = None
+        trace_meta = dict(trace_metadata or {})
+        trace_meta["llm_http_timeout_seconds"] = resolved_read
+
         if self._langfuse and trace_name:
             try:
                 generation = self._langfuse.generation(  # type: ignore[union-attr]
                     name=trace_name,
                     model=resolved_model,
                     input=messages,
-                    metadata=trace_metadata or {},
+                    metadata=trace_meta,
                 )
             except Exception:
                 logger.debug("Langfuse generation creation failed", exc_info=True)
 
-        resp = await self._http.post("/v1/chat/completions", json=payload)
+        req_timeout = httpx.Timeout(resolved_read, connect=10.0)
+        resp = await self._http.post(
+            "/v1/chat/completions",
+            json=payload,
+            timeout=req_timeout,
+        )
         resp.raise_for_status()
         data = resp.json()
 

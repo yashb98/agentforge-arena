@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from packages.shared.src.config import LLMSettings
 from packages.shared.src.llm.client import (
     LLMClient,
     LLMResponse,
@@ -20,6 +21,7 @@ from packages.shared.src.llm.client import (
     MODEL_PRICING,
     _estimate_cost,
 )
+from packages.shared.src.llm.task_timeout import LLMTaskKind
 
 
 # ============================================================
@@ -59,11 +61,12 @@ def _make_openai_response(
 
 @pytest.fixture()
 def mock_settings():
-    """Mock settings for LLMClient."""
+    """Minimal AppSettings-like object with real LLMSettings defaults."""
     settings = MagicMock()
-    settings.llm.litellm_proxy_url = "http://localhost:4000"
-    settings.llm.default_model = "claude-sonnet-4-6"
-    settings.llm.timeout_seconds = 30
+    settings.llm = LLMSettings(
+        litellm_proxy_url="http://localhost:4000",
+        default_model="claude-sonnet-4-6",
+    )
     return settings
 
 
@@ -145,6 +148,66 @@ class TestLLMClient:
         assert result.usage.cost_usd > 0
         assert result.usage.model == "claude-sonnet-4-6"
         assert result.usage.latency_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_completion_explicit_timeout_override(self, mock_settings: MagicMock) -> None:
+        """Explicit timeout_seconds is clamped and passed to HTTP layer."""
+        mock_response = httpx.Response(
+            200,
+            json=_make_openai_response(),
+            request=httpx.Request("POST", "http://localhost:4000/v1/chat/completions"),
+        )
+
+        with patch("packages.shared.src.llm.client.get_settings", return_value=mock_settings):
+            client = LLMClient()
+
+        client._http = AsyncMock()
+        client._http.post = AsyncMock(return_value=mock_response)
+
+        await client.completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            timeout_seconds=9999,
+        )
+        post_timeout = client._http.post.call_args.kwargs["timeout"]
+        assert post_timeout.read == mock_settings.llm.timeout_ceiling_seconds
+
+        await client.completion(
+            messages=[{"role": "user", "content": "Hi"}],
+            timeout_seconds=3,
+        )
+        post_timeout_low = client._http.post.call_args.kwargs["timeout"]
+        assert post_timeout_low.read == mock_settings.llm.timeout_floor_seconds
+
+    @pytest.mark.asyncio
+    async def test_completion_task_kind_changes_timeout(self, mock_settings: MagicMock) -> None:
+        """Planning tasks resolve to longer read timeouts than DEFAULT."""
+        mock_response = httpx.Response(
+            200,
+            json=_make_openai_response(),
+            request=httpx.Request("POST", "http://localhost:4000/v1/chat/completions"),
+        )
+
+        with patch("packages.shared.src.llm.client.get_settings", return_value=mock_settings):
+            client = LLMClient()
+
+        client._http = AsyncMock()
+        client._http.post = AsyncMock(return_value=mock_response)
+
+        await client.completion(
+            messages=[{"role": "user", "content": "x"}],
+            task_kind=LLMTaskKind.DEFAULT,
+            max_tokens=256,
+        )
+        t_default = client._http.post.call_args.kwargs["timeout"].read
+
+        await client.completion(
+            messages=[{"role": "user", "content": "x"}],
+            task_kind=LLMTaskKind.AGENT_PLANNING_WRITE,
+            max_tokens=256,
+        )
+        t_plan = client._http.post.call_args.kwargs["timeout"].read
+
+        assert t_plan > t_default
 
     @pytest.mark.asyncio
     async def test_completion_with_model_override(self, mock_settings: MagicMock) -> None:

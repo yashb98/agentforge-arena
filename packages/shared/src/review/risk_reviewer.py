@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -16,7 +16,7 @@ class RiskLevel(str, Enum):
 @dataclass(slots=True)
 class RiskReviewResult:
     level: RiskLevel
-    score: float  # 0.0 (safe) – 1.0 (risky)
+    score: float  # 0.0 (safe) - 1.0 (risky)
     reasons: list[str] = field(default_factory=list)
     paths_flagged: list[str] = field(default_factory=list)
 

@@ -7,9 +7,13 @@ from pathlib import Path
 # Optional `.claude/settings.json` for Anthropic Claude Code — other runtimes (Codex, Gemini CLI,
 # OpenCode, …) should seed their own config via ``agent_runtime``-specific bootstrap when added.
 # Broad allow inside the sandbox project only (MicroVM is the trust boundary).
+# ``defaultMode: bypassPermissions`` matches Claude Code permission modes (no interactive asks in
+# this project). See https://code.claude.com/docs/en/settings — org ``managed`` policies can still
+# override. ``skipDangerousModePermissionPrompt`` is ignored in project scope per upstream docs.
 # Omit hooks here — team projects start without monorepo hook scripts.
 TEAM_PROJECT_CLAUDE_SETTINGS_JSON = """{
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Read",
       "Write(**)",

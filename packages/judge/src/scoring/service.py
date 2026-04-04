@@ -22,6 +22,7 @@ from pathlib import Path
 from uuid import UUID
 
 from packages.shared.src.events.bus import EventBus
+from packages.shared.src.llm.task_timeout import LLMTaskKind
 from packages.shared.src.types.models import JudgeScore, MatchResult
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,7 @@ class LLMJudge:
                 temperature=0.0,
                 max_tokens=1024,
                 trace_name=f"judge.{dimension}",
+                task_kind=LLMTaskKind.JUDGE_SCORING,
             )
 
             data = json.loads(response.content)

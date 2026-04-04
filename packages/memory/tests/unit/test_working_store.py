@@ -58,6 +58,22 @@ async def test_append_event_is_bounded(store: WorkingMemoryStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_append_event_evicts_lowest_quality_first(store: WorkingMemoryStore) -> None:
+    agent_id = uuid4()
+    await store.append_event(agent_id, {"event": "a", "i": 0}, quality_score=0.9)
+    await store.append_event(agent_id, {"event": "b", "i": 1}, quality_score=0.9)
+    await store.append_event(agent_id, {"event": "c", "i": 2}, quality_score=0.1)
+    await store.append_event(agent_id, {"event": "d", "i": 3}, quality_score=0.9)
+
+    state = await store.get_state(agent_id)
+    events = state["recent_events"]
+    assert len(events) == 3
+    indices = [e["i"] for e in events]
+    assert 2 not in indices
+    assert indices == [0, 1, 3]
+
+
+@pytest.mark.asyncio
 async def test_clear_state_removes_payload(store: WorkingMemoryStore) -> None:
     agent_id = uuid4()
     await store.upsert_state(agent_id, {"notes": ["a", "b"]})

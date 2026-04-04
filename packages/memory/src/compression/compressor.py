@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from packages.memory.src.working.models import WorkingState
+from packages.shared.src.llm.task_timeout import LLMTaskKind
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class ContextCompressor:
                 "agent_id": str(state.agent_id),
                 "role": state.role.value,
             },
+            task_kind=LLMTaskKind.MEMORY_COMPRESSION,
         )
 
         # Preserve the 3 most recent decisions verbatim

@@ -7,12 +7,14 @@ import logging
 import re
 from dataclasses import dataclass
 
+from packages.memory.src.compression.research_notes import compress_research_notes
 from packages.research.src.aggregator.sweep import (
     ArxivSearcher,
     GitHubSearcher,
     PaperResult,
     RepoResult,
 )
+from packages.shared.src.llm.task_timeout import LLMTaskKind
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,8 @@ def _render_research_md(
             lines.append(f"- **Abstract (excerpt):** {ab[:400]}{'…' if len(ab) > 400 else ''}")
             lines.append("")
 
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    return compress_research_notes(body, budget_chars=8192)
 
 
 def _render_use_cases_md(ctx: ChallengeResearchContext) -> str:
@@ -276,6 +279,7 @@ async def _render_peer_review_llm(
             trace_metadata={"challenge_id": ctx.challenge_id},
             temperature=0.25,
             max_tokens=4096,
+            task_kind=LLMTaskKind.RESEARCH_PEER_REVIEW,
         )
         body = getattr(resp, "content", "") or ""
         return f"# Peer review — {ctx.title}\n\n{body.strip()}"
@@ -552,6 +556,7 @@ async def _architecture_seed_llm(
             trace_metadata={"challenge_id": ctx.challenge_id},
             temperature=0.2,
             max_tokens=4096,
+            task_kind=LLMTaskKind.RESEARCH_ARCHITECTURE_SEED,
         )
         body = getattr(resp, "content", "") or ""
         body = body.strip()

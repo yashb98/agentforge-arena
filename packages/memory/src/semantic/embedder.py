@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from packages.shared.src.llm.task_timeout import LLMTaskKind
+
 logger = logging.getLogger(__name__)
 
 # Default model: BAAI/bge-small-en-v1.5 (384-dim, ONNX, CPU)
@@ -49,6 +51,7 @@ class HybridEmbedder:
                     messages=[],
                     model="text-embedding-3-small",
                     max_tokens=1,
+                    task_kind=LLMTaskKind.MEMORY_EMBEDDING,
                 )
                 data = response.raw.get("data", [{}])
                 if data and "embedding" in data[0]:

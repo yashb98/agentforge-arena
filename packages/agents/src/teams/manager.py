@@ -25,6 +25,7 @@ from packages.memory.src.indexer.grammars import GrammarLoader
 from packages.memory.src.indexer.parser import CodeParser
 from packages.memory.src.navigation.service import NavigationService
 from packages.shared.src.config import get_settings
+from packages.shared.src.llm.task_timeout import infer_agent_llm_task_kind
 from packages.shared.src.types.models import (
     Agent,
     AgentMessage,
@@ -115,6 +116,8 @@ class AgentProcess:
         *,
         context_window_tokens: int = 200_000,
         context_rollover_ratio: float = 0.6,
+        llm_max_tokens: int = 8192,
+        llm_timeout_ceiling: int | None = None,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
@@ -126,6 +129,8 @@ class AgentProcess:
         self._task: asyncio.Task | None = None
         self._context_window_tokens = context_window_tokens
         self._context_rollover_ratio = context_rollover_ratio
+        self._llm_max_tokens = int(llm_max_tokens)
+        self._llm_timeout_ceiling = llm_timeout_ceiling
         # Per-agent "CLI" transcript (shared mailbox team, isolated per role/process).
         self._cli_transcript: list[dict[str, Any]] = []
 
@@ -258,17 +263,6 @@ class AgentProcess:
             logger.warning("Agent %s has no LLM client — skipping LLM call", self.agent.role.value)
             return
 
-        # Recall memory context before LLM call
-        memory_context_text = ""
-        if self._memory is not None:
-            try:
-                query = json.dumps(message.payload)[:500]
-                ctx = await self._memory.recall(self.agent.id, self.agent.role, query)
-                memory_context_text = ctx.format_for_prompt()
-            except Exception:
-                logger.warning("Memory recall failed for %s", self.agent.role.value, exc_info=True)
-
-        # Build conversation for LLM
         memory_context: dict | None = None
         if self._memory_manager is not None:
             try:
@@ -314,6 +308,7 @@ class AgentProcess:
             "team_id": str(self.agent.team_id),
             "message_type": message.message_type.value,
         }
+        task_kind = infer_agent_llm_task_kind(message, role=self.agent.role)
 
         try:
             final_content = ""
@@ -323,10 +318,14 @@ class AgentProcess:
                 response = await llm.completion(  # type: ignore[union-attr]
                     messages=messages,
                     model=self._model_id(),
+                    max_tokens=self._llm_max_tokens,
                     tools=tools if tools else None,
                     tool_choice={"type": "auto"} if tools else None,
                     trace_name=trace_name,
                     trace_metadata=trace_metadata,
+                    task_kind=task_kind,
+                    tool_round_index=_round_i,
+                    agent_timeout_ceiling=self._llm_timeout_ceiling,
                 )
 
                 self.agent.total_tokens_used += response.usage.total_tokens
@@ -486,15 +485,13 @@ class AgentTeamManager:
                 navigation_tools=navigation_tools,
                 context_window_tokens=agent_context_window_tokens,
                 context_rollover_ratio=agent_context_rollover_ratio,
+                llm_max_tokens=agent_config.max_tokens,
+                llm_timeout_ceiling=agent_config.timeout_seconds,
             )
 
             await process.start()
             agents.append(process)
             agent_ids.append(agent.id)
-
-            # Initialize L1 working memory for this agent
-            if memory_mgr is not None:
-                await memory_mgr.initialize(agent.id, agent_config.role)
 
         self._teams[team_id] = agents
         self._mailboxes[team_id] = mailbox
@@ -534,23 +531,10 @@ class AgentTeamManager:
         return [ap.agent for ap in agents]
 
     async def teardown_team(self, team_id: UUID) -> None:
-        """Stop all agents and clean up Redis mailboxes + memory."""
+        """Stop all agents and clean up Redis mailboxes."""
         agents = self._teams.get(team_id, [])
         for ap in agents:
             await ap.stop()
-
-        # Teardown memory (L1 only — L2/L3 persist)
-        memory_mgr = self._memory_managers.get(team_id)
-        if memory_mgr is not None:
-            for ap in agents:
-                await memory_mgr.teardown(ap.agent.id, ap.agent.role)
-            del self._memory_managers[team_id]
-
-        # Stop codebase watcher
-        watcher = self._watchers.get(team_id)
-        if watcher is not None:
-            await watcher.stop()  # type: ignore[union-attr]
-            del self._watchers[team_id]
 
         # Clear Redis mailboxes
         mailbox = self._mailboxes.get(team_id)
@@ -560,7 +544,7 @@ class AgentTeamManager:
 
         if team_id in self._teams:
             del self._teams[team_id]
-        logger.info("Team %s torn down (agents + mailboxes + memory)", team_id)
+        logger.info("Team %s torn down (agents + mailboxes)", team_id)
 
     async def teardown_all(self) -> None:
         """Teardown all teams. Used in shutdown."""
