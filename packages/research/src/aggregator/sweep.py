@@ -15,7 +15,14 @@ from datetime import datetime
 
 import httpx
 
+from packages.shared.src.reliability.circuit_breaker import (
+    CircuitBreaker,
+    circuit_breaker_http_guard,
+)
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_HTTP_TIMEOUT = 30.0
 
 
 @dataclass
@@ -58,11 +65,19 @@ class ResearchReport:
     papers: list[PaperResult] = field(default_factory=list)
     packages_found: list[dict] = field(default_factory=list)
     insights: list[str] = field(default_factory=list)
+    web_instant_snippets: list[str] = field(default_factory=list)
+    scholar_hits: list[str] = field(default_factory=list)
     generated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
     @property
     def sources_found(self) -> int:
-        return len(self.repos) + len(self.papers) + len(self.packages_found)
+        return (
+            len(self.repos)
+            + len(self.papers)
+            + len(self.packages_found)
+            + len(self.web_instant_snippets)
+            + len(self.scholar_hits)
+        )
 
     @property
     def insights_count(self) -> int:
@@ -98,6 +113,20 @@ class ResearchReport:
                 lines.append(f"- **Abstract**: {paper.abstract[:200]}...")
                 lines.append("")
 
+        if self.web_instant_snippets:
+            lines.append("## Web (DuckDuckGo instant answers)")
+            lines.append("")
+            for snip in self.web_instant_snippets[:5]:
+                lines.append(f"- {snip}")
+            lines.append("")
+
+        if self.scholar_hits:
+            lines.append("## Semantic Scholar")
+            lines.append("")
+            for hit in self.scholar_hits[:5]:
+                lines.append(f"- {hit}")
+            lines.append("")
+
         if self.insights:
             lines.append("## Key Insights")
             lines.append("")
@@ -129,10 +158,60 @@ class GitHubSearcher:
 
     BASE_URL = "https://api.github.com"
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self._headers = {"Accept": "application/vnd.github.v3+json"}
         if token:
             self._headers["Authorization"] = f"token {token}"
+        self._breaker = breaker
+
+    async def _get_json(self, url: str, *, params: dict | None = None) -> dict | None:
+        async def call() -> dict:
+            async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+                resp = await client.get(url, params=params or {}, headers=self._headers)
+                resp.raise_for_status()
+                out = resp.json()
+                if not isinstance(out, dict):
+                    msg = "GitHub response JSON was not an object"
+                    raise ValueError(msg)
+                return out
+
+        if self._breaker is None:
+            try:
+                return await call()
+            except (httpx.HTTPError, ValueError) as e:
+                logger.error("GitHub JSON request failed: %s", e)
+                return None
+        guarded = await circuit_breaker_http_guard(
+            self._breaker,
+            call,
+            fallback=None,
+            on_error=None,
+        )
+        return guarded if isinstance(guarded, dict) else None
+
+    async def _get_text(self, url: str, *, timeout: float = 15.0) -> str | None:
+        async def call() -> str:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.text
+
+        if self._breaker is None:
+            try:
+                return await call()
+            except httpx.HTTPError:
+                return None
+        out = await circuit_breaker_http_guard(
+            self._breaker,
+            call,
+            fallback=None,
+            on_error=None,
+        )
+        return out if isinstance(out, str) else None
 
     async def search_repos(
         self,
@@ -150,14 +229,9 @@ class GitHubSearcher:
         url = f"{self.BASE_URL}/search/repositories"
         params = {"q": q, "sort": sort, "order": "desc", "per_page": per_page}
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(url, params=params, headers=self._headers)
-                resp.raise_for_status()
-                data = resp.json()
-            except httpx.HTTPError as e:
-                logger.error("GitHub search failed: %s", e)
-                return []
+        data = await self._get_json(url, params=params)
+        if not data:
+            return []
 
         results = []
         for item in data.get("items", []):
@@ -178,14 +252,14 @@ class GitHubSearcher:
         return results
 
     async def get_readme(self, full_name: str) -> str | None:
-        """Fetch a repo's README content."""
+        """Fetch a repo's README content (404 on wrong branch is expected — no breaker)."""
         for branch in ("main", "master"):
             url = f"https://raw.githubusercontent.com/{full_name}/{branch}/README.md"
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 try:
                     resp = await client.get(url)
                     if resp.status_code == 200:
-                        return resp.text[:5000]  # Limit to 5000 chars
+                        return resp.text[:5000]
                 except httpx.HTTPError:
                     continue
         return None
@@ -201,14 +275,9 @@ class GitHubSearcher:
         url = f"{self.BASE_URL}/search/code"
         params = {"q": q, "per_page": per_page}
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(url, params=params, headers=self._headers)
-                resp.raise_for_status()
-                data = resp.json()
-            except httpx.HTTPError as e:
-                logger.error("GitHub code search failed: %s", e)
-                return []
+        data = await self._get_json(url, params=params)
+        if not data:
+            return []
 
         return [
             {
@@ -226,6 +295,9 @@ class ArxivSearcher:
 
     BASE_URL = "https://export.arxiv.org/api/query"
 
+    def __init__(self, breaker: CircuitBreaker | None = None) -> None:
+        self._breaker = breaker
+
     async def search(
         self, query: str, *, max_results: int = 10, sort_by: str = "submittedDate"
     ) -> list[PaperResult]:
@@ -238,13 +310,26 @@ class ArxivSearcher:
             "sortOrder": "descending",
         }
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
+        async def call() -> str:
+            async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
                 resp = await client.get(self.BASE_URL, params=params)
                 resp.raise_for_status()
-                xml_content = resp.text
+                return resp.text
+
+        if self._breaker is None:
+            try:
+                xml_content = await call()
             except httpx.HTTPError as e:
                 logger.error("arXiv search failed: %s", e)
+                return []
+        else:
+            xml_content = await circuit_breaker_http_guard(
+                self._breaker,
+                call,
+                fallback=None,
+                on_error=None,
+            )
+            if not isinstance(xml_content, str):
                 return []
 
         return self._parse_atom_feed(xml_content)
@@ -302,47 +387,199 @@ class ArxivSearcher:
 class PackageSearcher:
     """Search PyPI and NPM for packages."""
 
+    def __init__(
+        self,
+        *,
+        pypi_breaker: CircuitBreaker | None = None,
+        npm_breaker: CircuitBreaker | None = None,
+    ) -> None:
+        self._pypi_breaker = pypi_breaker
+        self._npm_breaker = npm_breaker
+
+    async def _pypi_json(self, url: str) -> dict | None:
+        async def call() -> dict:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    msg = f"PyPI status {resp.status_code}"
+                    raise httpx.HTTPStatusError(msg, request=resp.request, response=resp)
+                out = resp.json()
+                if not isinstance(out, dict):
+                    msg = "PyPI JSON not object"
+                    raise ValueError(msg)
+                return out
+
+        if self._pypi_breaker is None:
+            try:
+                return await call()
+            except (httpx.HTTPError, ValueError):
+                return None
+        out = await circuit_breaker_http_guard(
+            self._pypi_breaker,
+            call,
+            fallback=None,
+            on_error=None,
+        )
+        return out if isinstance(out, dict) else None
+
+    async def _npm_json(self, url: str) -> dict | None:
+        async def call() -> dict:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    msg = f"npm status {resp.status_code}"
+                    raise httpx.HTTPStatusError(msg, request=resp.request, response=resp)
+                out = resp.json()
+                if not isinstance(out, dict):
+                    msg = "npm JSON not object"
+                    raise ValueError(msg)
+                return out
+
+        if self._npm_breaker is None:
+            try:
+                return await call()
+            except (httpx.HTTPError, ValueError):
+                return None
+        out = await circuit_breaker_http_guard(
+            self._npm_breaker,
+            call,
+            fallback=None,
+            on_error=None,
+        )
+        return out if isinstance(out, dict) else None
+
     async def search_pypi(self, package_name: str) -> dict | None:
         """Get PyPI package info."""
         url = f"https://pypi.org/pypi/{package_name}/json"
-        async with httpx.AsyncClient(timeout=15) as client:
-            try:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    return None
-                data = resp.json()
-                info = data.get("info", {})
-                return {
-                    "name": info.get("name"),
-                    "version": info.get("version"),
-                    "summary": info.get("summary"),
-                    "requires_python": info.get("requires_python"),
-                    "license": info.get("license"),
-                    "home_page": info.get("home_page"),
-                    "project_url": info.get("project_url"),
-                }
-            except httpx.HTTPError:
-                return None
+        data = await self._pypi_json(url)
+        if not data:
+            return None
+        info = data.get("info", {})
+        return {
+            "name": info.get("name"),
+            "version": info.get("version"),
+            "summary": info.get("summary"),
+            "requires_python": info.get("requires_python"),
+            "license": info.get("license"),
+            "home_page": info.get("home_page"),
+            "project_url": info.get("project_url"),
+        }
 
     async def search_npm(self, package_name: str) -> dict | None:
         """Get NPM package info."""
         url = f"https://registry.npmjs.org/{package_name}"
-        async with httpx.AsyncClient(timeout=15) as client:
+        data = await self._npm_json(url)
+        if not data:
+            return None
+        latest = data.get("dist-tags", {}).get("latest", "")
+        return {
+            "name": data.get("name"),
+            "version": latest,
+            "description": data.get("description"),
+            "license": data.get("license"),
+            "modified": data.get("time", {}).get("modified"),
+        }
+
+
+class DuckDuckGoWebSearcher:
+    """DuckDuckGo instant answer API (no browser, no API key)."""
+
+    BASE_URL = "https://api.duckduckgo.com/"
+
+    def __init__(self, breaker: CircuitBreaker | None = None) -> None:
+        self._breaker = breaker
+
+    async def instant_summary(self, query: str) -> list[str]:
+        params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+
+        async def call() -> dict:
+            async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+                resp = await client.get(self.BASE_URL, params=params)
+                resp.raise_for_status()
+                out = resp.json()
+                if not isinstance(out, dict):
+                    msg = "DuckDuckGo JSON not object"
+                    raise ValueError(msg)
+                return out
+
+        if self._breaker is None:
             try:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    return None
-                data = resp.json()
-                latest = data.get("dist-tags", {}).get("latest", "")
-                return {
-                    "name": data.get("name"),
-                    "version": latest,
-                    "description": data.get("description"),
-                    "license": data.get("license"),
-                    "modified": data.get("time", {}).get("modified"),
-                }
-            except httpx.HTTPError:
-                return None
+                data = await call()
+            except (httpx.HTTPError, ValueError) as e:
+                logger.debug("DuckDuckGo instant failed: %s", e)
+                return []
+        else:
+            data = await circuit_breaker_http_guard(
+                self._breaker,
+                call,
+                fallback=None,
+                on_error=None,
+            )
+            if not isinstance(data, dict):
+                return []
+
+        snippets: list[str] = []
+        abstract = (data.get("AbstractText") or "").strip()
+        if abstract:
+            snippets.append(abstract[:1200])
+        for topic in data.get("RelatedTopics", [])[:5]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                snippets.append(str(topic["Text"])[:400])
+        return snippets
+
+
+class SemanticScholarSearcher:
+    """Semantic Scholar Graph API (public, rate-limited)."""
+
+    BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+    def __init__(self, breaker: CircuitBreaker | None = None) -> None:
+        self._breaker = breaker
+
+    async def search_titles(self, query: str, *, limit: int = 5) -> list[str]:
+        params = {
+            "query": query,
+            "limit": limit,
+            "fields": "title,url",
+        }
+
+        async def call() -> dict:
+            async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+                resp = await client.get(self.BASE_URL, params=params)
+                resp.raise_for_status()
+                out = resp.json()
+                if not isinstance(out, dict):
+                    msg = "Semantic Scholar JSON not object"
+                    raise ValueError(msg)
+                return out
+
+        if self._breaker is None:
+            try:
+                data = await call()
+            except (httpx.HTTPError, ValueError) as e:
+                logger.debug("Semantic Scholar search failed: %s", e)
+                return []
+        else:
+            data = await circuit_breaker_http_guard(
+                self._breaker,
+                call,
+                fallback=None,
+                on_error=None,
+            )
+            if not isinstance(data, dict):
+                return []
+
+        hits: list[str] = []
+        for item in data.get("data", [])[:limit]:
+            if not isinstance(item, dict):
+                continue
+            title = (item.get("title") or "").strip()
+            url = (item.get("url") or "").strip()
+            if title and url:
+                hits.append(f"{title} — {url}")
+            elif title:
+                hits.append(title)
+        return hits
 
 
 class ResearchSweep:
@@ -352,11 +589,32 @@ class ResearchSweep:
         self,
         scope: str = "full",
         github_token: str | None = None,
+        *,
+        breakers: dict[str, CircuitBreaker] | None = None,
     ) -> None:
         self.scope = scope
-        self.github = GitHubSearcher(token=github_token)
-        self.arxiv = ArxivSearcher()
-        self.packages = PackageSearcher()
+        b = breakers or {}
+        self._breakers = {
+            "github": b.get("github") or CircuitBreaker("github_api"),
+            "arxiv": b.get("arxiv") or CircuitBreaker("arxiv_api"),
+            "pypi": b.get("pypi") or CircuitBreaker("pypi_api"),
+            "npm": b.get("npm") or CircuitBreaker("npm_registry"),
+            "duckduckgo": b.get("duckduckgo") or CircuitBreaker("duckduckgo_instant"),
+            "semantic_scholar": b.get("semantic_scholar") or CircuitBreaker("semantic_scholar_api"),
+        }
+        self.github = GitHubSearcher(
+            token=github_token,
+            breaker=self._breakers["github"],
+        )
+        self.arxiv = ArxivSearcher(breaker=self._breakers["arxiv"])
+        self.packages = PackageSearcher(
+            pypi_breaker=self._breakers["pypi"],
+            npm_breaker=self._breakers["npm"],
+        )
+        self.duckduckgo = DuckDuckGoWebSearcher(breaker=self._breakers["duckduckgo"])
+        self.semantic_scholar = SemanticScholarSearcher(
+            breaker=self._breakers["semantic_scholar"],
+        )
 
     async def run(self, query: str = "AI agent competition tournament") -> ResearchReport:
         """Run a full research sweep."""
@@ -373,14 +631,22 @@ class ResearchSweep:
         if self.scope in ("full", "tools"):
             tasks.append(self._search_packages(report))
 
+        if self.scope == "full":
+            tasks.append(self._search_web(report, query))
+            tasks.append(self._search_semantic_scholar(report, query))
+
         await asyncio.gather(*tasks, return_exceptions=True)
 
         # Generate insights
         report.insights = self._generate_insights(report)
 
         logger.info(
-            "Research sweep complete: %d repos, %d papers, %d insights",
-            len(report.repos), len(report.papers), len(report.insights),
+            "Research sweep complete: %d repos, %d papers, %d web, %d s2, %d insights",
+            len(report.repos),
+            len(report.papers),
+            len(report.web_instant_snippets),
+            len(report.scholar_hits),
+            len(report.insights),
         )
 
         return report
@@ -415,6 +681,16 @@ class ResearchSweep:
             if info:
                 report.packages_found.append(info)
 
+    async def _search_web(self, report: ResearchReport, query: str) -> None:
+        """DuckDuckGo instant answers (circuit-broken)."""
+        snippets = await self.duckduckgo.instant_summary(query)
+        report.web_instant_snippets.extend(snippets)
+
+    async def _search_semantic_scholar(self, report: ResearchReport, query: str) -> None:
+        """Semantic Scholar paper titles (circuit-broken)."""
+        hits = await self.semantic_scholar.search_titles(query, limit=5)
+        report.scholar_hits.extend(hits)
+
     def _generate_insights(self, report: ResearchReport) -> list[str]:
         """Generate actionable insights from research."""
         insights = []
@@ -439,6 +715,16 @@ class ResearchSweep:
         if report.packages_found:
             insights.append(
                 f"Verified {len(report.packages_found)} key packages are available on PyPI"
+            )
+
+        if report.web_instant_snippets:
+            insights.append(
+                f"Collected {len(report.web_instant_snippets)} DuckDuckGo instant snippets"
+            )
+
+        if report.scholar_hits:
+            insights.append(
+                f"Semantic Scholar returned {len(report.scholar_hits)} paper hits"
             )
 
         return insights
