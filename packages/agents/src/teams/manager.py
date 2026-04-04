@@ -258,6 +258,16 @@ class AgentProcess:
             logger.warning("Agent %s has no LLM client — skipping LLM call", self.agent.role.value)
             return
 
+        # Recall memory context before LLM call
+        memory_context_text = ""
+        if self._memory is not None:
+            try:
+                query = json.dumps(message.payload)[:500]
+                ctx = await self._memory.recall(self.agent.id, self.agent.role, query)
+                memory_context_text = ctx.format_for_prompt()
+            except Exception:
+                logger.warning("Memory recall failed for %s", self.agent.role.value, exc_info=True)
+
         # Build conversation for LLM
         memory_context: dict | None = None
         if self._memory_manager is not None:
@@ -482,6 +492,10 @@ class AgentTeamManager:
             agents.append(process)
             agent_ids.append(agent.id)
 
+            # Initialize L1 working memory for this agent
+            if memory_mgr is not None:
+                await memory_mgr.initialize(agent.id, agent_config.role)
+
         self._teams[team_id] = agents
         self._mailboxes[team_id] = mailbox
         logger.info("Spawned %d agents for team %s", len(agents), team_id)
@@ -520,10 +534,23 @@ class AgentTeamManager:
         return [ap.agent for ap in agents]
 
     async def teardown_team(self, team_id: UUID) -> None:
-        """Stop all agents and clean up Redis mailboxes."""
+        """Stop all agents and clean up Redis mailboxes + memory."""
         agents = self._teams.get(team_id, [])
         for ap in agents:
             await ap.stop()
+
+        # Teardown memory (L1 only — L2/L3 persist)
+        memory_mgr = self._memory_managers.get(team_id)
+        if memory_mgr is not None:
+            for ap in agents:
+                await memory_mgr.teardown(ap.agent.id, ap.agent.role)
+            del self._memory_managers[team_id]
+
+        # Stop codebase watcher
+        watcher = self._watchers.get(team_id)
+        if watcher is not None:
+            await watcher.stop()  # type: ignore[union-attr]
+            del self._watchers[team_id]
 
         # Clear Redis mailboxes
         mailbox = self._mailboxes.get(team_id)
@@ -533,7 +560,7 @@ class AgentTeamManager:
 
         if team_id in self._teams:
             del self._teams[team_id]
-        logger.info("Team %s torn down (agents + mailboxes)", team_id)
+        logger.info("Team %s torn down (agents + mailboxes + memory)", team_id)
 
     async def teardown_all(self) -> None:
         """Teardown all teams. Used in shutdown."""
