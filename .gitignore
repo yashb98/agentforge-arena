@@ -1,3 +1,6 @@
+# Vendored upstream clones (used only to refresh Hermes skill packs)
+.vendor/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -50,6 +53,9 @@ Thumbs.db
 
 # Worktrees
 .worktrees/
+
+# code-review-graph (local SQLite graph; per-repo)
+.code-review-graph/
 
 # Secrets (NEVER commit these)
 *.pem

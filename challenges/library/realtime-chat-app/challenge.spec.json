@@ -5,7 +5,11 @@
   "metadata": {
     "category": "real_time",
     "difficulty": "hard",
-    "tags": ["websocket", "chat", "presence"],
+    "tags": [
+      "websocket",
+      "chat",
+      "presence"
+    ],
     "time_limit_minutes": 120
   },
   "requirements": [
@@ -29,20 +33,37 @@
     ],
     "phase_hints": {
       "research": {
-        "objectives": ["Review WebSocket scaling, presence, and persistence tradeoffs."]
+        "objectives": [
+          "Review WebSocket scaling, presence, and persistence tradeoffs."
+        ]
       },
       "architecture": {
-        "deliverables": ["ARCHITECTURE.md for rooms, connections, and storage."]
+        "deliverables": [
+          "ARCHITECTURE.md for rooms, connections, and storage."
+        ]
       }
     },
     "milestones": []
   },
   "delivery": {
     "root_readme_required": true,
-    "artifact_globs": ["README.md", "ARCHITECTURE.md", "Dockerfile"]
+    "artifact_globs": [
+      "README.md",
+      "ARCHITECTURE.md",
+      "Dockerfile"
+    ]
   },
   "quality": {
-    "commands": []
+    "commands": [
+      {
+        "name": "module_boundaries",
+        "cmd": [
+          "python",
+          "scripts/check_module_boundaries.py"
+        ],
+        "required": false
+      }
+    ]
   },
   "judge": {
     "rubric_version": "1",
@@ -78,7 +99,12 @@
         "description": "Polish beyond baseline requirements."
       }
     ],
-    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+    "pass_gates": [
+      {
+        "criterion_id": "functionality",
+        "min_score": 0.5
+      }
+    ]
   },
   "agents": {
     "global_constraints": [
@@ -86,8 +112,20 @@
       "Include Dockerfile, README, and ARCHITECTURE.md."
     ],
     "roles": {
-      "architect": { "focus": ["WebSocket design", "room model", "presence"] },
-      "builder": { "focus": ["implementation", "tests", "realtime edge cases"] }
+      "architect": {
+        "focus": [
+          "WebSocket design",
+          "room model",
+          "presence"
+        ]
+      },
+      "builder": {
+        "focus": [
+          "implementation",
+          "tests",
+          "realtime edge cases"
+        ]
+      }
     }
   },
   "hidden_test_hints": [

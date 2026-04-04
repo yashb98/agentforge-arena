@@ -22,6 +22,12 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from packages.core.src.tournament.quality_runner import QualityRunner
+from packages.research.src.task_research_brief import (
+    ChallengeResearchContext,
+    generate_architecture_phase_seed_docs,
+    run_architecture_followup_research,
+    run_challenge_research_brief,
+)
 from packages.shared.src.challenge_library import load_validated_library_challenge
 from packages.shared.src.config import get_settings
 from packages.shared.src.db.base import get_session
@@ -124,6 +130,10 @@ class TournamentOrchestrator:
         self._phase_timers: dict[UUID, asyncio.Task[None]] = {}
         self._health_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._team_hierarchy: dict[UUID, dict[UUID, list[UUID]]] = {}
+        # In-memory copy of RESEARCH-phase markdown for ARCHITECTURE-phase LLM/sweeps (not persisted).
+        self._research_artifacts_by_tournament: dict[UUID, dict[str, str]] = {}
+        # Wall-clock deadline for the active auto-timer phase (hackathon pressure + tick events).
+        self._phase_deadline: dict[UUID, datetime] = {}
 
     # ========================================================
     # Tournament Lifecycle
@@ -228,6 +238,8 @@ class TournamentOrchestrator:
                 tournament_id=tournament_id,
                 config=team_config,
                 sandbox_id=sandbox_id,
+                agent_context_window_tokens=tournament.config.agent_context_window_tokens,
+                agent_context_rollover_ratio=tournament.config.agent_context_rollover_ratio,
             )
 
             tournament.team_ids.append(team_id)
@@ -302,7 +314,10 @@ class TournamentOrchestrator:
             "tournament.started",
             source="core.orchestrator",
             tournament_id=tournament_id,
-            payload={"team_ids": [str(t) for t in tournament.team_ids]},
+            payload={
+                "team_ids": [str(t) for t in tournament.team_ids],
+                "agent_runtime": tournament.config.agent_runtime,
+            },
         )
 
         logger.info("Tournament %s started with %d teams",
@@ -359,18 +374,35 @@ class TournamentOrchestrator:
             if tournament.id in self._phase_timers:
                 self._phase_timers[tournament.id].cancel()
                 del self._phase_timers[tournament.id]
+            self._phase_deadline.pop(tournament.id, None)
 
             if _uses_auto_phase_timers(tournament.format):
+                deadline = datetime.utcnow() + timedelta(seconds=duration)
+                self._phase_deadline[tournament.id] = deadline
                 await self._persist_runtime_checkpoint(
-                    tournament, timer_phase=next_phase, duration_seconds=duration
+                    tournament,
+                    timer_phase=next_phase,
+                    duration_seconds=duration,
+                    deadline=deadline,
                 )
                 self._phase_timers[tournament.id] = asyncio.create_task(
-                    self._phase_timer(tournament, next_phase, duration)
+                    self._phase_timer(
+                        tournament, next_phase, duration, phase_deadline=deadline
+                    )
                 )
             else:
                 await self._persist_runtime_checkpoint(
                     tournament, timer_phase=None, duration_seconds=0
                 )
+
+        else:
+            if tournament.id in self._phase_timers:
+                self._phase_timers[tournament.id].cancel()
+                del self._phase_timers[tournament.id]
+            self._phase_deadline.pop(tournament.id, None)
+            await self._persist_runtime_checkpoint(
+                tournament, timer_phase=None, duration_seconds=0
+            )
 
         logger.info("Tournament %s: %s → %s", tournament.id, previous.value, next_phase.value)
 
@@ -384,36 +416,67 @@ class TournamentOrchestrator:
         duration_seconds: int,
         *,
         resume_remaining_seconds: int | None = None,
+        phase_deadline: datetime | None = None,
     ) -> None:
-        """Timer that enforces phase deadlines.
+        """Timer that enforces phase deadlines with periodic clock ticks.
 
-        When ``resume_remaining_seconds`` is set (after process restart), sleeps are
-        based on remaining wall time instead of the full configured duration.
+        Uses a wall-clock ``phase_deadline`` when provided (normal runs + DB restore).
+        ``resume_remaining_seconds`` is only used when ``phase_deadline`` is omitted
+        (e.g. tests) to compute a synthetic deadline from "now".
         """
         try:
-            budget = (
-                resume_remaining_seconds
-                if resume_remaining_seconds is not None
-                else duration_seconds
-            )
-            if budget <= 0:
-                next_phase = PHASE_TRANSITIONS.get(phase)
-                if next_phase and tournament.current_phase == phase:
-                    await self._transition_phase(tournament, next_phase)
+            if phase_deadline is not None:
+                deadline = phase_deadline
+            else:
+                budget = (
+                    resume_remaining_seconds
+                    if resume_remaining_seconds is not None
+                    else duration_seconds
+                )
+                if budget <= 0:
+                    next_phase = PHASE_TRANSITIONS.get(phase)
+                    if next_phase and tournament.current_phase == phase:
+                        await self._transition_phase(tournament, next_phase)
+                    return
+                deadline = datetime.utcnow() + timedelta(seconds=budget)
+
+            self._phase_deadline[tournament.id] = deadline
+
+            # Periodic ticks (~every 5 min) while more than 60s remain — hackathon pressure.
+            while True:
+                remaining = (deadline - datetime.utcnow()).total_seconds()
+                if remaining <= 60:
+                    break
+                chunk = min(300.0, remaining - 60.0)
+                await asyncio.sleep(chunk)
+                if tournament.current_phase != phase:
+                    return
+                remaining = (deadline - datetime.utcnow()).total_seconds()
+                if remaining <= 60:
+                    break
+                await self._emit_phase_tick(tournament, phase, int(remaining))
+
+            remaining = (deadline - datetime.utcnow()).total_seconds()
+            if remaining > 60:
+                await asyncio.sleep(remaining - 60)
+                remaining = (deadline - datetime.utcnow()).total_seconds()
+
+            if tournament.current_phase != phase:
                 return
 
-            # Send 60-second warning when enough time remains
-            if budget > 60:
-                await asyncio.sleep(budget - 60)
+            if remaining > 0:
+                warn_sec = int(min(60, max(1, remaining)))
                 await self._events.publish(
                     "tournament.phase.ending",
                     source="core.orchestrator",
                     tournament_id=tournament.id,
-                    payload={"phase": phase.value, "seconds_remaining": 60},
+                    payload={
+                        "phase": phase.value,
+                        "seconds_remaining": warn_sec,
+                        "phase_deadline_utc": deadline.isoformat(),
+                    },
                 )
-                await asyncio.sleep(60)
-            else:
-                await asyncio.sleep(budget)
+                await asyncio.sleep(remaining)
 
             next_phase = PHASE_TRANSITIONS.get(phase)
             if next_phase and tournament.current_phase == phase:
@@ -421,7 +484,8 @@ class TournamentOrchestrator:
                 await self._transition_phase(tournament, next_phase)
 
         except asyncio.CancelledError:
-            pass
+            self._phase_deadline.pop(tournament.id, None)
+            raise
 
     async def _execute_phase_setup(
         self, tournament: Tournament, phase: TournamentPhase
@@ -429,18 +493,44 @@ class TournamentOrchestrator:
         """Execute phase-specific initialization logic."""
         match phase:
             case TournamentPhase.RESEARCH:
+                await self._seed_research_phase_briefs(tournament)
                 # Notify agents: "Research phase started, challenge is in your workspace"
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "research_start",
-                        {"message": "Research phase started. Read the challenge and research!"}
+                        {
+                            "message": (
+                                "Research phase started. Review RESEARCH.md, USE_CASES.md, "
+                                "PEER_REVIEW.md, and RESEARCH_QUERIES.md in your project root, "
+                                "then deepen with your own searches. Prefer current docs and "
+                                "targeted research over stale training knowledge."
+                            ),
+                            "research_policy": (
+                                "Before later implementation phases: re-verify assumptions; "
+                                "update RESEARCH.md / ARCHITECTURE.md when facts change. "
+                                "See .claude/rules/00-research-before-implement.md in your project."
+                            ),
+                            **self._phase_clock_fields(
+                                tournament, TournamentPhase.RESEARCH
+                            ),
+                        },
                     )
 
             case TournamentPhase.ARCHITECTURE:
+                await self._seed_architecture_phase_artifacts(tournament)
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "architecture_start",
-                        {"message": "Architecture phase. Create ARCHITECTURE.md and assign tasks."}
+                        {
+                            "message": (
+                                "Architecture phase. Review ARCHITECTURE_SEED.md, REQUIREMENTS_TRACE.md, "
+                                "and RESEARCH_ARCHITECTURE.md (if present), then produce ARCHITECTURE.md "
+                                "and assign tasks. Reconcile with the latest research — no stale APIs."
+                            ),
+                            **self._phase_clock_fields(
+                                tournament, TournamentPhase.ARCHITECTURE
+                            ),
+                        },
                     )
 
             case TournamentPhase.BUILD:
@@ -448,7 +538,14 @@ class TournamentOrchestrator:
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "build_start",
-                        {"message": "BUILD SPRINT! All agents work in parallel. Ship it!"}
+                        {
+                            "message": (
+                                "BUILD SPRINT — all agents in parallel. Before each new feature or "
+                                "dependency, re-check CHALLENGE.md + RESEARCH.md and refresh facts "
+                                "if APIs or defaults may have changed."
+                            ),
+                            **self._phase_clock_fields(tournament, TournamentPhase.BUILD),
+                        },
                     )
 
             case TournamentPhase.CROSS_REVIEW:
@@ -459,7 +556,13 @@ class TournamentOrchestrator:
                 for team_id in tournament.team_ids:
                     await self._notify_team(
                         tournament.id, team_id, "fix_start",
-                        {"message": "Fix phase. Address cross-review feedback. Last chance!"}
+                        {
+                            "message": (
+                                "Fix phase: address cross-review feedback. Last window before judge — "
+                                "verify fixes against current docs, not memory-only recall."
+                            ),
+                            **self._phase_clock_fields(tournament, TournamentPhase.FIX),
+                        },
                     )
 
             case TournamentPhase.JUDGE:
@@ -486,6 +589,11 @@ class TournamentOrchestrator:
             )
             md = await self._load_challenge(tournament.challenge_id)
 
+        boundary_path = repo_root / "scripts" / "check_module_boundaries.py"
+        boundary_script: str | None = None
+        if boundary_path.is_file():
+            boundary_script = boundary_path.read_text(encoding="utf-8")
+
         for team_id in tournament.team_ids:
             await self._sandbox.write_file(  # type: ignore[attr-defined]
                 team_id=str(team_id),
@@ -498,6 +606,164 @@ class TournamentOrchestrator:
                     path="challenge.spec.json",
                     content=spec_json,
                 )
+            if boundary_script is not None:
+                await self._sandbox.write_file(  # type: ignore[attr-defined]
+                    team_id=str(team_id),
+                    path="scripts/check_module_boundaries.py",
+                    content=boundary_script,
+                )
+
+    async def _seed_research_phase_briefs(self, tournament: Tournament) -> None:
+        """Generate arXiv/GitHub-aligned briefs and write markdown into each team project."""
+        settings = get_settings()
+        rs = settings.research
+        if not rs.seed_briefs_on_research_phase:
+            return
+
+        repo_root = Path(__file__).resolve().parents[4]
+        try:
+            _md, spec = load_validated_library_challenge(repo_root, tournament.challenge_id)
+        except (FileNotFoundError, ValidationError, ValueError, OSError):
+            logger.exception("Research briefs skipped: invalid challenge library entry")
+            return
+
+        ctx = ChallengeResearchContext(
+            title=spec.title,
+            challenge_id=spec.challenge_id,
+            requirements=list(spec.requirements),
+            category=spec.metadata.category.value,
+        )
+        token = rs.github_token.get_secret_value() if rs.github_token else None
+
+        llm_client: object | None = None
+        if rs.peer_review_with_llm:
+            try:
+                from packages.shared.src.llm.client import LLMClient
+
+                llm_client = LLMClient()
+            except Exception:
+                logger.warning("LLM client unavailable; peer review will use template")
+
+        use_llm = rs.peer_review_with_llm and llm_client is not None
+        files: dict[str, str] = {}
+        try:
+            files = await run_challenge_research_brief(
+                ctx,
+                github_token=token,
+                arxiv_max_per_query=rs.arxiv_max_per_query,
+                github_per_query=rs.github_per_query,
+                llm_client=llm_client,
+                peer_review_with_llm=use_llm,
+            )
+        except Exception:
+            logger.exception("Research brief generation failed")
+            return
+        finally:
+            if llm_client is not None:
+                closer = getattr(llm_client, "close", None)
+                if closer is not None:
+                    await closer()  # type: ignore[misc]
+
+        self._research_artifacts_by_tournament[tournament.id] = dict(files)
+
+        for team_id in tournament.team_ids:
+            for path, content in files.items():
+                await self._sandbox.write_file(  # type: ignore[attr-defined]
+                    team_id=str(team_id),
+                    path=path,
+                    content=content,
+                )
+
+        await self._events.publish(
+            "tournament.research.briefs_seeded",
+            source="core.orchestrator",
+            tournament_id=tournament.id,
+            payload={"files": list(files.keys()), "challenge_id": tournament.challenge_id},
+        )
+
+    async def _seed_architecture_phase_artifacts(self, tournament: Tournament) -> None:
+        """Optional second research sweep + ARCHITECTURE_SEED / requirements trace into sandboxes."""
+        settings = get_settings()
+        rs = settings.research
+        if not rs.seed_architecture_phase:
+            return
+
+        repo_root = Path(__file__).resolve().parents[4]
+        try:
+            _md, spec = load_validated_library_challenge(repo_root, tournament.challenge_id)
+        except (FileNotFoundError, ValidationError, ValueError, OSError):
+            logger.exception("Architecture phase artifacts skipped: invalid challenge library entry")
+            return
+
+        ctx = ChallengeResearchContext(
+            title=spec.title,
+            challenge_id=spec.challenge_id,
+            requirements=list(spec.requirements),
+            category=spec.metadata.category.value,
+        )
+        token = rs.github_token.get_secret_value() if rs.github_token else None
+
+        followup: dict[str, str] = {}
+        if rs.architecture_followup_sweep:
+            try:
+                followup = await run_architecture_followup_research(
+                    ctx,
+                    github_token=token,
+                    arxiv_max_per_query=min(3, rs.arxiv_max_per_query),
+                    github_per_query=min(5, rs.github_per_query),
+                )
+            except Exception:
+                logger.exception("Architecture follow-up research failed")
+
+        llm_client: object | None = None
+        if rs.architecture_seed_with_llm:
+            try:
+                from packages.shared.src.llm.client import LLMClient
+
+                llm_client = LLMClient()
+            except Exception:
+                logger.warning("LLM client unavailable; architecture seed will use template")
+
+        use_llm = rs.architecture_seed_with_llm and llm_client is not None
+        cached = self._research_artifacts_by_tournament.get(tournament.id, {})
+        extra_arch = followup.get("RESEARCH_ARCHITECTURE.md", "")
+
+        seed_files: dict[str, str] = {}
+        try:
+            seed_files = await generate_architecture_phase_seed_docs(
+                ctx,
+                cached,
+                llm_client=llm_client,
+                seed_with_llm=use_llm,
+                extra_architecture_research=extra_arch,
+            )
+        except Exception:
+            logger.exception("Architecture seed document generation failed")
+            seed_files = {}
+        finally:
+            if llm_client is not None:
+                closer = getattr(llm_client, "close", None)
+                if closer is not None:
+                    await closer()  # type: ignore[misc]
+
+        merged: dict[str, str] = {**followup, **seed_files}
+        if not merged:
+            return
+
+        for team_id in tournament.team_ids:
+            for path, content in merged.items():
+                await self._sandbox.write_file(  # type: ignore[attr-defined]
+                    team_id=str(team_id),
+                    path=path,
+                    content=content,
+                )
+
+        await self._events.publish(
+            "tournament.architecture.artifacts_seeded",
+            source="core.orchestrator",
+            tournament_id=tournament.id,
+            payload={"files": list(merged.keys()), "challenge_id": tournament.challenge_id},
+        )
 
     async def _setup_cross_review(self, tournament: Tournament) -> None:
         """Grant read-only cross-team access for the review phase."""
@@ -536,6 +802,7 @@ class TournamentOrchestrator:
         if tournament.id in self._health_tasks:
             self._health_tasks[tournament.id].cancel()
         self._team_hierarchy.pop(tournament.id, None)
+        self._research_artifacts_by_tournament.pop(tournament.id, None)
 
         await self._events.publish(
             "tournament.completed",
@@ -623,6 +890,7 @@ class TournamentOrchestrator:
         if tournament_id in self._phase_timers:
             self._phase_timers[tournament_id].cancel()
             del self._phase_timers[tournament_id]
+        self._phase_deadline.pop(tournament_id, None)
 
         # Cancel health monitor
         if tournament_id in self._health_tasks:
@@ -636,6 +904,7 @@ class TournamentOrchestrator:
             except Exception:
                 logger.warning("Failed to destroy sandbox for team %s", team_id)
         self._team_hierarchy.pop(tournament_id, None)
+        self._research_artifacts_by_tournament.pop(tournament_id, None)
 
         tournament.current_phase = TournamentPhase.CANCELLED
         tournament.completed_at = datetime.utcnow()
@@ -676,6 +945,7 @@ class TournamentOrchestrator:
         *,
         timer_phase: TournamentPhase | None,
         duration_seconds: int,
+        deadline: datetime | None = None,
     ) -> None:
         """Write ``runtime_state`` JSONB for crash recovery and timer restore."""
         payload: dict = {
@@ -688,9 +958,11 @@ class TournamentOrchestrator:
             and duration_seconds > 0
             and _uses_auto_phase_timers(tournament.format)
         ):
-            deadline = datetime.utcnow() + timedelta(seconds=duration_seconds)
+            eff_deadline = deadline or (
+                datetime.utcnow() + timedelta(seconds=duration_seconds)
+            )
             payload["phase_timer_phase"] = timer_phase.value
-            payload["deadline_utc"] = deadline.isoformat()
+            payload["deadline_utc"] = eff_deadline.isoformat()
             payload["duration_seconds"] = duration_seconds
         else:
             payload["phase_timer_phase"] = tournament.current_phase.value
@@ -787,13 +1059,13 @@ class TournamentOrchestrator:
             if tournament.id in self._phase_timers:
                 self._phase_timers[tournament.id].cancel()
             tp = tournament.current_phase
-            resume_sec = int(remaining) if remaining > 0 else 1
+            self._phase_deadline[tournament.id] = deadline
             self._phase_timers[tournament.id] = asyncio.create_task(
                 self._phase_timer(
                     tournament,
                     tp,
                     full_dur,
-                    resume_remaining_seconds=resume_sec,
+                    phase_deadline=deadline,
                 )
             )
             logger.info(
@@ -937,6 +1209,61 @@ class TournamentOrchestrator:
     # ========================================================
     # Helpers
     # ========================================================
+
+    def _phase_clock_fields(self, tournament: Tournament, phase: TournamentPhase) -> dict:
+        """Wall-clock context for team notifications (hackathon pressure)."""
+        timings = (
+            tournament.config.phase_timings or DEFAULT_PHASE_TIMINGS[tournament.format]
+        )
+        budget = int(timings.get(phase, 0))
+        deadline = self._phase_deadline.get(tournament.id)
+        payload: dict[str, object] = {
+            "phase_budget_seconds": budget,
+            "pressure_note": (
+                "Wall-clock phase: when time is up, the orchestrator advances — "
+                "prioritize shippable increments."
+            ),
+        }
+        if deadline is not None:
+            payload["phase_deadline_utc"] = deadline.isoformat()
+            payload["seconds_remaining"] = max(
+                0, int((deadline - datetime.utcnow()).total_seconds())
+            )
+        else:
+            payload["phase_deadline_utc"] = None
+            payload["seconds_remaining"] = budget
+        return payload
+
+    async def _emit_phase_tick(
+        self,
+        tournament: Tournament,
+        phase: TournamentPhase,
+        seconds_remaining: int,
+    ) -> None:
+        await self._events.publish(
+            "tournament.phase.tick",
+            source="core.orchestrator",
+            tournament_id=tournament.id,
+            payload={
+                "phase": phase.value,
+                "seconds_remaining": seconds_remaining,
+                "pressure_note": "Clock tick — re-prioritize; phase ends at deadline.",
+            },
+        )
+        for team_id in tournament.team_ids:
+            await self._notify_team(
+                tournament.id,
+                team_id,
+                "clock_tick",
+                {
+                    "phase": phase.value,
+                    "seconds_remaining": seconds_remaining,
+                    "message": (
+                        f"[CLOCK] Phase {phase.value}: ~{seconds_remaining // 60} min left "
+                        f"({seconds_remaining}s). Ship the next increment."
+                    ),
+                },
+            )
 
     async def _notify_team(
         self, tournament_id: UUID, team_id: UUID, event_type: str, data: dict

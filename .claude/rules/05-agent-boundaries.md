@@ -10,6 +10,7 @@ All agent operations within tournament sandboxes and the agent orchestration sys
 - Agents CANNOT read/write outside their team workspace
 - Cross-review phase grants READ-ONLY access to opponent workspace
 - Agent-created projects live inside: `/arena/team-{id}/project/`
+- Competition evolution (skills, hooks, rules, ADRs, architecture docs) is confined to that project tree — **not** the AgentForge Arena monorepo root (`packages/`, repo-level `.claude/` for platform work)
 
 ### Process Isolation
 - Each agent runs as a separate process inside the team's MicroVM

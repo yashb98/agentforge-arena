@@ -554,10 +554,11 @@ async def test_deliver_challenge_writes_markdown_and_spec(
     )
     await orchestrator._deliver_challenge(tournament)
     wf = orchestrator._sandbox.write_file
-    assert wf.await_count == 2
+    assert wf.await_count == 3
     paths = [c.kwargs["path"] for c in wf.await_args_list]
     assert "CHALLENGE.md" in paths
     assert "challenge.spec.json" in paths
+    assert "scripts/check_module_boundaries.py" in paths
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ instead of file-based JSON inboxes.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -20,6 +21,7 @@ from packages.shared.src.types.models import (
     AgentRole,
     AgentStatus,
     MessageType,
+    ModelProvider,
 )
 
 # ============================================================
@@ -47,7 +49,7 @@ def sample_agent() -> Agent:
         team_id=uuid4(),
         tournament_id=uuid4(),
         role=AgentRole.BUILDER,
-        model="claude-sonnet-4-6",
+        model=ModelProvider.CLAUDE_SONNET_4_6,
     )
 
 
@@ -125,7 +127,10 @@ class TestAgentProcessMailbox:
         llm_client.completion = AsyncMock(
             return_value=SimpleNamespace(
                 content="Implemented changes.",
-                usage=SimpleNamespace(total_tokens=10, cost_usd=0.01),
+                tool_calls=[],
+                usage=SimpleNamespace(
+                    total_tokens=10, cost_usd=0.01, prompt_tokens=200
+                ),
             )
         )
         memory_manager = MagicMock()
@@ -144,6 +149,86 @@ class TestAgentProcessMailbox:
 
         memory_manager.recall.assert_awaited_once()
         memory_manager.record.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_message_runs_tool_round_then_final_text(
+        self, sample_agent: Agent, mock_mailbox: MagicMock, sample_message: AgentMessage
+    ) -> None:
+        """LLM returns a memory_recall tool call, then a final text answer."""
+        call1 = SimpleNamespace(
+            content="",
+            tool_calls=[
+                {"id": "call_1", "name": "memory_recall", "arguments": '{"query": "ctx"}'},
+            ],
+            usage=SimpleNamespace(total_tokens=5, cost_usd=0.001, prompt_tokens=100),
+        )
+        call2 = SimpleNamespace(
+            content="Done.",
+            tool_calls=[],
+            usage=SimpleNamespace(total_tokens=8, cost_usd=0.002, prompt_tokens=250),
+        )
+        llm_client = MagicMock()
+        llm_client.completion = AsyncMock(side_effect=[call1, call2])
+        memory_manager = MagicMock()
+        memory_manager.recall = AsyncMock(return_value={})
+        memory_manager.record = AsyncMock()
+        process = AgentProcess(
+            agent=sample_agent,
+            system_prompt="You are a builder agent.",
+            workspace_path="/tmp/test-workspace",
+            mailbox=mock_mailbox,
+            llm_client=llm_client,
+            memory_manager=memory_manager,
+            navigation_tools=None,
+        )
+
+        await process._process_message(sample_message)
+
+        assert llm_client.completion.await_count == 2
+        memory_manager.record.assert_awaited_once()
+        assert sample_agent.total_tokens_used == 13
+
+    @pytest.mark.asyncio
+    async def test_cli_session_rollover_writes_handoff(
+        self, sample_agent: Agent, mock_mailbox: MagicMock, sample_message: AgentMessage, tmp_path: Path
+    ) -> None:
+        """When prompt_tokens crosses the rollover threshold, persist handoff and reset transcript."""
+        workspace = str(tmp_path / "team-project")
+        llm_client = MagicMock()
+        llm_client.completion = AsyncMock(
+            return_value=SimpleNamespace(
+                content="Large-context reply.",
+                tool_calls=[],
+                usage=SimpleNamespace(
+                    total_tokens=130_000,
+                    cost_usd=0.05,
+                    prompt_tokens=125_000,
+                ),
+            )
+        )
+        memory_manager = MagicMock()
+        memory_manager.recall = AsyncMock(return_value={})
+        memory_manager.record = AsyncMock()
+        process = AgentProcess(
+            agent=sample_agent,
+            system_prompt="You are a builder agent.",
+            workspace_path=workspace,
+            mailbox=mock_mailbox,
+            llm_client=llm_client,
+            memory_manager=memory_manager,
+            context_window_tokens=200_000,
+            context_rollover_ratio=0.6,
+        )
+
+        await process._process_message(sample_message)
+
+        handoff = Path(workspace) / "docs" / "cli-session-handoff-0.md"
+        assert handoff.is_file()
+        assert sample_agent.cli_session_id == 1
+        assert len(process._cli_transcript) == 2
+        assert process._cli_transcript[0]["role"] == "system"
+        assert "new CLI session" in process._cli_transcript[1]["content"]
+        assert memory_manager.record.await_count >= 2
 
     @pytest.mark.asyncio
     async def test_start_sets_active_status(self, agent_process: AgentProcess) -> None:

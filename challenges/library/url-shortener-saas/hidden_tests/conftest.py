@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
-BASE_URL = "http://localhost:8000"
+# CI / golden runner may start the app on an ephemeral port — override when set.
+BASE_URL = os.environ.get(
+    "AGENTFORGE_HIDDEN_TEST_BASE_URL",
+    "http://localhost:8000",
+)
 
 
 @pytest.fixture()

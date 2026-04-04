@@ -15,6 +15,12 @@ description: |
 Transform a challenge brief into a complete project skeleton that agents can
 immediately start building in. This is the Architect agent's primary tool.
 
+## Scope boundary (Arena tournaments)
+
+Scaffold and refine **only inside the team’s challenge repository** — the `project/` directory rooted at that team’s sandbox workspace (`…/team-{id}/project/`). All later edits to rules, hooks, skills, ADRs, architecture docs, and specs belong there.
+
+Do **not** modify the AgentForge Arena monorepo (`packages/`, platform `.claude/`, etc.) when executing a challenge; that is outside the competition workspace.
+
 ## Workflow
 
 ### Step 1: Analyze the Challenge Brief
@@ -49,7 +55,7 @@ project/
 │   │   └── project-rules.md    ← Stack-specific coding standards
 │   ├── hooks/
 │   │   └── post-write.sh       ← Auto-format on save
-│   └── skills/                  ← Custom skills if needed
+│   └── skills/                  ← Bundled packs seeded by Arena + custom skills
 ├── pyproject.toml               ← Python dependencies + config
 ├── src/
 │   ├── __init__.py

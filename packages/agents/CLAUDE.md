@@ -21,7 +21,7 @@ When an Architect agent starts a project, it can:
 4. Set up `.claude/hooks/` for auto-formatting
 5. Search for and configure MCP plugins
 
-This is the "agents creating their own agent configs" capability.
+This is the "agents creating their own agent configs" capability. In tournaments, **all of the above lives under the team sandbox project root** (`…/team-{id}/project/`). The Arena monorepo is not the editable workspace for competing agents.
 
 ## Dependencies
 - `packages/shared` — Types, events, config

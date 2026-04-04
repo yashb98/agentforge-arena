@@ -5,7 +5,8 @@ Docker Sandbox MicroVM management. Creates isolated environments for each team,
 manages network policies, resource limits, and filesystem access.
 
 ## Key Modules
-- `src/docker/manager.py` — SandboxManager: create, destroy, resource monitoring
+- `src/docker/manager.py` — SandboxManager: create, destroy, resource monitoring; seeds `project/.claude/settings.json` (broad allow — sandbox is the boundary), `project/.claude/rules/00-research-before-implement.md`, bundled `.claude/skills/`, and code-review-graph `project/.mcp.json` + `.code-review-graphignore`
+- `src/docker/team_workspace_seed.py` — static team-project Claude settings, research-first rule text, and code-review-graph seed files
 - `src/security/agentshield.py` — 102-rule security scanner (pre-execution)
 - `src/security/parry.py` — Prompt injection detection
 - `src/network/policy.py` — Network allow/deny list management

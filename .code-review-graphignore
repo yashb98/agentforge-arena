@@ -1,0 +1,20 @@
+# code-review-graph — skip from the knowledge graph (monorepo root)
+.venv/
+venv/
+env/
+node_modules/
+.next/
+out/
+dist/
+build/
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+*.egg-info/
+.vendor/
+.worktrees/
+.tmp-*/
+.git/

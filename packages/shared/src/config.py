@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -98,6 +98,7 @@ class SandboxSettings(BaseSettings):
             "github.com",
             "api.github.com",
             "arxiv.org",
+            "export.arxiv.org",
         ]
     )
     workspace_base: str = "/arena"
@@ -114,6 +115,24 @@ class StorageSettings(BaseSettings):
     secret_key: SecretStr = SecretStr("minioadmin")
     bucket_artifacts: str = "arena-artifacts"
     bucket_replays: str = "arena-replays"
+
+
+class ResearchSettings(BaseSettings):
+    """Automated challenge research (arXiv + GitHub) seeded into team sandboxes."""
+
+    model_config = SettingsConfigDict(env_prefix="RESEARCH_", extra="ignore")
+
+    seed_briefs_on_research_phase: bool = True
+    peer_review_with_llm: bool = True
+    seed_architecture_phase: bool = True
+    architecture_followup_sweep: bool = True
+    architecture_seed_with_llm: bool = True
+    arxiv_max_per_query: int = Field(default=5, ge=1, le=20)
+    github_per_query: int = Field(default=7, ge=1, le=30)
+    github_token: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RESEARCH_GITHUB_TOKEN", "GITHUB_TOKEN"),
+    )
 
 
 class MemorySettings(BaseSettings):
@@ -158,6 +177,7 @@ class AppSettings(BaseSettings):
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    research: ResearchSettings = Field(default_factory=ResearchSettings)
 
 
 @lru_cache(maxsize=1)

@@ -5,7 +5,11 @@
   "metadata": {
     "category": "saas_app",
     "difficulty": "medium",
-    "tags": ["http", "storage", "analytics"],
+    "tags": [
+      "http",
+      "storage",
+      "analytics"
+    ],
     "time_limit_minutes": 90
   },
   "requirements": [
@@ -30,20 +34,37 @@
     ],
     "phase_hints": {
       "research": {
-        "objectives": ["Survey URL safety, storage, and analytics patterns."]
+        "objectives": [
+          "Survey URL safety, storage, and analytics patterns."
+        ]
       },
       "architecture": {
-        "deliverables": ["Design API surface, persistence model, and scaling notes in docs/."]
+        "deliverables": [
+          "Design API surface, persistence model, and scaling notes in docs/."
+        ]
       }
     },
     "milestones": []
   },
   "delivery": {
     "root_readme_required": true,
-    "artifact_globs": ["README.md", "Dockerfile", "docs/**/*.md"]
+    "artifact_globs": [
+      "README.md",
+      "Dockerfile",
+      "docs/**/*.md"
+    ]
   },
   "quality": {
-    "commands": []
+    "commands": [
+      {
+        "name": "module_boundaries",
+        "cmd": [
+          "python",
+          "scripts/check_module_boundaries.py"
+        ],
+        "required": false
+      }
+    ]
   },
   "judge": {
     "rubric_version": "1",
@@ -79,7 +100,12 @@
         "description": "Novel approaches within constraints."
       }
     ],
-    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+    "pass_gates": [
+      {
+        "criterion_id": "functionality",
+        "min_score": 0.5
+      }
+    ]
   },
   "agents": {
     "global_constraints": [
@@ -87,9 +113,26 @@
       "Include a Dockerfile and README with setup instructions."
     ],
     "roles": {
-      "architect": { "focus": ["API design", "data model", "observability"] },
-      "builder": { "focus": ["implementation", "tests", "Docker"] },
-      "tester": { "focus": ["edge cases", "load-sensitive paths"] }
+      "architect": {
+        "focus": [
+          "API design",
+          "data model",
+          "observability"
+        ]
+      },
+      "builder": {
+        "focus": [
+          "implementation",
+          "tests",
+          "Docker"
+        ]
+      },
+      "tester": {
+        "focus": [
+          "edge cases",
+          "load-sensitive paths"
+        ]
+      }
     }
   },
   "hidden_test_hints": [

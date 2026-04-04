@@ -149,6 +149,31 @@ class TournamentConfig(BaseModel):
     teams: list[TeamConfig] = Field(min_length=2, max_length=8)
     phase_timings: dict[TournamentPhase, int] | None = None  # Override default timings (seconds)
     budget_limit_usd: float = Field(default=500.0, ge=10.0, le=5000.0)
+    # Which coding-agent stack teams use (orchestrator + runners; LiteLLM stays model-agnostic).
+    agent_runtime: str = Field(
+        default="arena_native",
+        max_length=128,
+        description=(
+            "Agent execution backend per tournament, e.g. arena_native (in-process LLM/tools), "
+            "claude_code, codex_cli, gemini_cli, opencode. Runners/spawners should read this."
+        ),
+    )
+    # Per-team agent "CLI session" continuity (arena_native transcript + future claude_code runners).
+    agent_context_window_tokens: int = Field(
+        default=200_000,
+        ge=8_192,
+        le=2_000_000,
+        description="Approximate model context budget used for rollover decisions (prompt_tokens vs this cap).",
+    )
+    agent_context_rollover_ratio: float = Field(
+        default=0.6,
+        ge=0.1,
+        le=0.95,
+        description=(
+            "When the largest prompt_tokens in a completed turn reaches this fraction of "
+            "agent_context_window_tokens, persist a handoff and start a fresh in-agent CLI session."
+        ),
+    )
 
 
 # ============================================================
@@ -199,6 +224,8 @@ class Agent(BaseModel):
     model: ModelProvider
     status: AgentStatus = AgentStatus.IDLE
     process_id: int | None = None
+    # Increments each time this agent's LLM transcript rolls over (fresh CLI-equivalent session).
+    cli_session_id: int = Field(default=0, ge=0)
     total_tokens_used: int = 0
     total_cost_usd: float = 0.0
     actions_count: int = 0

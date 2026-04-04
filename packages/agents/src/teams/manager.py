@@ -14,10 +14,16 @@ import logging
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from packages.agents.src.communication.mailbox import RedisMailbox
+from packages.agents.src.tools.executor import AgentToolExecutor
+from packages.agents.src.tools.navigation import NavigationTools
+from packages.agents.src.tools.schemas import build_agent_tool_definitions
+from packages.memory.src.indexer.grammars import GrammarLoader
+from packages.memory.src.indexer.parser import CodeParser
+from packages.memory.src.navigation.service import NavigationService
 from packages.shared.src.config import get_settings
 from packages.shared.src.types.models import (
     Agent,
@@ -33,6 +39,36 @@ if TYPE_CHECKING:
     from packages.shared.src.events.bus import EventBus
 
 logger = logging.getLogger(__name__)
+
+_MAX_LLM_TOOL_ROUNDS = 8
+_HANDOFF_EXCERPT_MSG_CAP = 14
+_HANDOFF_BODY_TRUNC = 6000
+
+
+def _usage_prompt_tokens(usage: object) -> int:
+    raw = getattr(usage, "prompt_tokens", None)
+    if isinstance(raw, int) and raw >= 0:
+        return raw
+    return 0
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 24]}\n\n… [truncated] …\n"
+
+
+def _transcript_markdown_excerpt(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    tail = messages[-_HANDOFF_EXCERPT_MSG_CAP:]
+    for m in tail:
+        role = m.get("role", "?")
+        if role == "system":
+            continue
+        content = m.get("content")
+        body = content if isinstance(content, str) else json.dumps(content, default=str)
+        lines.append(f"### {role}\n\n{_truncate_text(body, _HANDOFF_BODY_TRUNC)}\n")
+    return "\n".join(lines)
 
 # Agent role → system prompt file mapping
 AGENT_PROMPT_FILES: dict[AgentRole, str] = {
@@ -75,6 +111,10 @@ class AgentProcess:
         mailbox: RedisMailbox,
         llm_client: object | None = None,
         memory_manager: MemoryManagerProtocol | None = None,
+        navigation_tools: NavigationTools | None = None,
+        *,
+        context_window_tokens: int = 200_000,
+        context_rollover_ratio: float = 0.6,
     ) -> None:
         self.agent = agent
         self.system_prompt = system_prompt
@@ -82,7 +122,92 @@ class AgentProcess:
         self._mailbox = mailbox
         self._llm_client = llm_client
         self._memory_manager = memory_manager
+        self._navigation_tools = navigation_tools
         self._task: asyncio.Task | None = None
+        self._context_window_tokens = context_window_tokens
+        self._context_rollover_ratio = context_rollover_ratio
+        # Per-agent "CLI" transcript (shared mailbox team, isolated per role/process).
+        self._cli_transcript: list[dict[str, Any]] = []
+
+    @property
+    def _prompt_token_rollover_threshold(self) -> int:
+        return max(
+            1024,
+            int(self._context_window_tokens * self._context_rollover_ratio),
+        )
+
+    def _model_id(self) -> str:
+        m = self.agent.model
+        return m.value if hasattr(m, "value") else str(m)
+
+    def _assistant_tool_message(self, response: object) -> dict[str, Any]:
+        """Build OpenAI assistant message including optional tool_calls."""
+        content = getattr(response, "content", "") or ""
+        msg: dict[str, Any] = {"role": "assistant", "content": content or None}
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                }
+                for tc in tool_calls
+            ]
+        return msg
+
+    async def _rollover_cli_session(self, ended_messages: list[dict[str, Any]]) -> None:
+        """Write handoff artifact, record memory, and reset to a fresh CLI-equivalent session."""
+        prev = self.agent.cli_session_id
+        docs = Path(self.workspace_path) / "docs"
+        await asyncio.to_thread(docs.mkdir, parents=True, exist_ok=True)
+        rel_name = f"cli-session-handoff-{prev}.md"
+        path = docs / rel_name
+        body = (
+            f"# CLI session handoff (team {self.agent.team_id}, role {self.agent.role.value})\n\n"
+            f"Ended session index: **{prev}**. New session index: **{prev + 1}**.\n\n"
+            "## Transcript excerpt\n\n"
+            f"{_transcript_markdown_excerpt(ended_messages)}\n"
+        )
+        await asyncio.to_thread(path.write_text, body, encoding="utf-8")
+
+        if self._memory_manager is not None:
+            try:
+                await self._memory_manager.record(
+                    self.agent.id,
+                    self.agent.role,
+                    task="cli_session_handoff",
+                    decision=_truncate_text(body, 1500),
+                    notes=[f"handoff_file:{rel_name}"],
+                    metadata={
+                        "team_id": str(self.agent.team_id),
+                        "module_name": "cli_session",
+                        "prior_cli_session_id": prev,
+                        "next_cli_session_id": prev + 1,
+                    },
+                )
+            except Exception:
+                logger.exception("Memory record failed during CLI handoff for agent %s", self.agent.id)
+
+        self.agent.cli_session_id = prev + 1
+        handoff_user = (
+            f"This is a **new CLI session** (index {self.agent.cli_session_id}) after reaching "
+            f"~{int(self._context_rollover_ratio * 100)}% of the configured context window.\n\n"
+            f"Read prior work from `docs/{rel_name}` (and MEMORY) and continue without redoing "
+            "decisions already captured there."
+        )
+        self._cli_transcript = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": handoff_user},
+        ]
+        logger.info(
+            "Agent %s (%s) rolled over CLI session %s → %s (handoff %s)",
+            self.agent.role.value,
+            self.agent.id,
+            prev,
+            self.agent.cli_session_id,
+            rel_name,
+        )
 
     async def start(self) -> None:
         """Start the agent process."""
@@ -152,33 +277,87 @@ class AgentProcess:
         if memory_context:
             user_content += f"\n\n[MEMORY]\n{json.dumps(memory_context)}"
 
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_content},
-        ]
+        if not self._cli_transcript:
+            base: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
+        else:
+            base = list(self._cli_transcript)
+        messages = [*base, {"role": "user", "content": user_content}]
+
+        tools = build_agent_tool_definitions(
+            include_navigation=self._navigation_tools is not None,
+            include_memory_recall=self._memory_manager is not None,
+        )
+        executor: AgentToolExecutor | None = None
+        if tools:
+            executor = AgentToolExecutor(
+                team_id=self.agent.team_id,
+                agent_id=self.agent.id,
+                role=self.agent.role,
+                workspace_path=self.workspace_path,
+                navigation_tools=self._navigation_tools,
+                memory_manager=self._memory_manager,
+            )
+
+        trace_name = f"agent.{self.agent.role.value}.{message.message_type.value}"
+        trace_metadata = {
+            "agent_id": str(self.agent.id),
+            "team_id": str(self.agent.team_id),
+            "message_type": message.message_type.value,
+        }
 
         try:
-            response = await self._llm_client.completion(  # type: ignore[union-attr]
-                messages=messages,
-                model=self.agent.model,
-                trace_name=f"agent.{self.agent.role.value}.{message.message_type.value}",
-                trace_metadata={
-                    "agent_id": str(self.agent.id),
-                    "team_id": str(self.agent.team_id),
-                    "message_type": message.message_type.value,
-                },
-            )
+            final_content = ""
+            llm = self._llm_client
+            max_prompt_tokens = 0
+            for _round_i in range(_MAX_LLM_TOOL_ROUNDS):
+                response = await llm.completion(  # type: ignore[union-attr]
+                    messages=messages,
+                    model=self._model_id(),
+                    tools=tools if tools else None,
+                    tool_choice={"type": "auto"} if tools else None,
+                    trace_name=trace_name,
+                    trace_metadata=trace_metadata,
+                )
 
-            # Track token usage
-            self.agent.total_tokens_used += response.usage.total_tokens
-            self.agent.total_cost_usd += response.usage.cost_usd
+                self.agent.total_tokens_used += response.usage.total_tokens
+                self.agent.total_cost_usd += response.usage.cost_usd
+                pt = _usage_prompt_tokens(response.usage)
+                if pt > max_prompt_tokens:
+                    max_prompt_tokens = pt
 
-            logger.debug(
-                "Agent %s LLM response: %d tokens, $%.4f",
-                self.agent.role.value,
-                response.usage.total_tokens,
-                response.usage.cost_usd,
-            )
+                logger.debug(
+                    "Agent %s LLM response (round): %d tokens, $%.4f",
+                    self.agent.role.value,
+                    response.usage.total_tokens,
+                    response.usage.cost_usd,
+                )
+
+                if not response.tool_calls:
+                    final_content = response.content
+                    break
+
+                messages.append(self._assistant_tool_message(response))
+                assert executor is not None
+                for tc in response.tool_calls:
+                    body = await executor.execute(tc["name"], tc["arguments"])
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": body,
+                    })
+            else:
+                logger.warning(
+                    "Agent %s hit max tool rounds (%d) without final text",
+                    self.agent.role.value,
+                    _MAX_LLM_TOOL_ROUNDS,
+                )
+
+            self._cli_transcript = messages
+            if (
+                max_prompt_tokens > 0
+                and max_prompt_tokens >= self._prompt_token_rollover_threshold
+            ):
+                await self._rollover_cli_session(messages)
 
             if self._memory_manager is not None:
                 try:
@@ -191,7 +370,7 @@ class AgentProcess:
                         self.agent.id,
                         self.agent.role,
                         task=f"{message.message_type.value} from {message.from_agent.value}",
-                        decision=getattr(response, "content", "")[:500],
+                        decision=final_content[:500],
                         metadata={
                             "team_id": str(self.agent.team_id),
                             "module_name": module_name or "general",
@@ -250,6 +429,9 @@ class AgentTeamManager:
         tournament_id: UUID,
         config: TeamConfig,
         sandbox_id: str,
+        *,
+        agent_context_window_tokens: int = 200_000,
+        agent_context_rollover_ratio: float = 0.6,
     ) -> list[UUID]:
         """Spawn all agents for a team. Returns list of agent IDs."""
         settings = get_settings()
@@ -259,6 +441,9 @@ class AgentTeamManager:
         if self._redis is None:
             raise RuntimeError("Redis not configured — cannot create agent mailbox")
         mailbox = RedisMailbox(redis=self._redis, team_id=team_id)
+
+        navigation = NavigationService(CodeParser(GrammarLoader()))
+        navigation_tools = NavigationTools(navigation)
 
         agents: list[AgentProcess] = []
         agent_ids: list[UUID] = []
@@ -288,6 +473,9 @@ class AgentTeamManager:
                 mailbox=mailbox,
                 llm_client=self._llm_client,
                 memory_manager=self._memory_manager,
+                navigation_tools=navigation_tools,
+                context_window_tokens=agent_context_window_tokens,
+                context_rollover_ratio=agent_context_rollover_ratio,
             )
 
             await process.start()

@@ -12,10 +12,34 @@ import logging
 import re
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from packages.sandbox.src.docker.team_skill_packs import seed_team_skill_packs
+from packages.sandbox.src.docker.team_workspace_seed import (
+    TEAM_PROJECT_CLAUDE_SETTINGS_JSON,
+    TEAM_PROJECT_RULE_RESEARCH_FIRST,
+    write_team_code_review_graph_seed,
+)
 from packages.shared.src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _write_team_claude_seed_files(project_root: Path) -> None:
+    """Permissive Claude Code permissions + research-first rule (sandbox is the boundary)."""
+    project_root.mkdir(parents=True, exist_ok=True)
+    claude = project_root / ".claude"
+    claude.mkdir(parents=True, exist_ok=True)
+    (claude / "settings.json").write_text(
+        TEAM_PROJECT_CLAUDE_SETTINGS_JSON.strip() + "\n",
+        encoding="utf-8",
+    )
+    rules = claude / "rules"
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / "00-research-before-implement.md").write_text(
+        TEAM_PROJECT_RULE_RESEARCH_FIRST.strip() + "\n",
+        encoding="utf-8",
+    )
 
 
 @dataclass
@@ -144,6 +168,14 @@ class SandboxManager:
             stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
+
+        # Copy bundled skill packs (Hermes/agentskills-style dirs) into .claude/skills/
+        await asyncio.to_thread(seed_team_skill_packs, Path(workspace) / "project")
+        await asyncio.to_thread(_write_team_claude_seed_files, Path(workspace) / "project")
+        await asyncio.to_thread(
+            write_team_code_review_graph_seed,
+            Path(workspace) / "project",
+        )
 
     async def write_file(self, team_id: str, path: str, content: str) -> None:
         """Write a file into a team's sandbox workspace."""

@@ -5,7 +5,11 @@
   "metadata": {
     "category": "api_service",
     "difficulty": "hard",
-    "tags": ["queue", "workers", "retries"],
+    "tags": [
+      "queue",
+      "workers",
+      "retries"
+    ],
     "time_limit_minutes": 120
   },
   "requirements": [
@@ -30,20 +34,37 @@
     ],
     "phase_hints": {
       "research": {
-        "objectives": ["Compare queue semantics, durability, and worker coordination patterns."]
+        "objectives": [
+          "Compare queue semantics, durability, and worker coordination patterns."
+        ]
       },
       "architecture": {
-        "deliverables": ["ARCHITECTURE.md covering queue, workers, and failure domains."]
+        "deliverables": [
+          "ARCHITECTURE.md covering queue, workers, and failure domains."
+        ]
       }
     },
     "milestones": []
   },
   "delivery": {
     "root_readme_required": true,
-    "artifact_globs": ["README.md", "ARCHITECTURE.md", "Dockerfile"]
+    "artifact_globs": [
+      "README.md",
+      "ARCHITECTURE.md",
+      "Dockerfile"
+    ]
   },
   "quality": {
-    "commands": []
+    "commands": [
+      {
+        "name": "module_boundaries",
+        "cmd": [
+          "python",
+          "scripts/check_module_boundaries.py"
+        ],
+        "required": false
+      }
+    ]
   },
   "judge": {
     "rubric_version": "1",
@@ -79,7 +100,12 @@
         "description": "Creative extensions within constraints."
       }
     ],
-    "pass_gates": [{ "criterion_id": "functionality", "min_score": 0.5 }]
+    "pass_gates": [
+      {
+        "criterion_id": "functionality",
+        "min_score": 0.5
+      }
+    ]
   },
   "agents": {
     "global_constraints": [
@@ -87,8 +113,20 @@
       "Include Dockerfile, README, and ARCHITECTURE.md."
     ],
     "roles": {
-      "architect": { "focus": ["queue model", "worker protocol", "failure handling"] },
-      "builder": { "focus": ["HTTP API", "persistence", "concurrency"] }
+      "architect": {
+        "focus": [
+          "queue model",
+          "worker protocol",
+          "failure handling"
+        ]
+      },
+      "builder": {
+        "focus": [
+          "HTTP API",
+          "persistence",
+          "concurrency"
+        ]
+      }
     }
   },
   "hidden_test_hints": [

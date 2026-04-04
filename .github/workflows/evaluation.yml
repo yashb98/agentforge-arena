@@ -1,0 +1,47 @@
+# Automated evaluation gate: challenge library + package tests.
+# Extend with tournament dry-runs or artifact export when those are scripted.
+
+name: Evaluation
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: evaluation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  challenge-library-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project (dev)
+        run: pip install -e ".[dev]"
+
+      - name: Validate challenge library (frozen suites)
+        run: |
+          set -o pipefail
+          python scripts/eval/validate_challenge_library.py --json-summary | tee challenge_validation.json
+
+      - name: Upload challenge validation summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: challenge-validation
+          path: challenge_validation.json
+
+      - name: Golden reference — url-shortener hidden tests
+        run: python scripts/eval/run_url_shortener_golden_hidden_tests.py
+
+      - name: Run package tests
+        run: pytest packages/ -q --override-ini="addopts="

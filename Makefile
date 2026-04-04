@@ -2,7 +2,8 @@
 # Run `make help` for available commands
 
 .PHONY: help setup dev test lint type-check format clean \
-        db-up db-down db-migrate tournament-duel health-check
+        db-up db-down db-migrate tournament-duel health-check \
+        challenge-validate eval-pipeline golden-hidden-url-shortener
 
 # ============================================================
 # Help
@@ -55,6 +56,14 @@ format: ## Format all code with ruff
 	ruff check --fix --select=I packages/
 
 quality: lint type-check test ## Run all quality checks
+
+challenge-validate: ## Validate all library challenges (spec, hidden_tests, judge criteria)
+	python scripts/eval/validate_challenge_library.py
+
+eval-pipeline: challenge-validate golden-hidden-url-shortener test ## CI-style: challenges + golden hidden + unit tests
+
+golden-hidden-url-shortener: ## Run url-shortener hidden tests against golden reference app
+	python scripts/eval/run_url_shortener_golden_hidden_tests.py
 
 # ============================================================
 # Database
